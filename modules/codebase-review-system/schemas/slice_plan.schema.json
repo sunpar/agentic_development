@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "slices": {
+      "items": {
+        "required": [
+          "id",
+          "feature_id",
+          "title",
+          "slice_type",
+          "description",
+          "intended_behavior",
+          "why_this_slice_exists",
+          "files_to_read",
+          "docs_to_read",
+          "tests_to_read",
+          "files_allowed_to_edit",
+          "files_not_allowed_to_edit",
+          "entry_points",
+          "invariants",
+          "non_goals",
+          "review_questions",
+          "refactor_targets",
+          "verification_commands",
+          "expected_pr_size",
+          "dependencies",
+          "parallel_conflicts",
+          "risk",
+          "risk_notes",
+          "acceptance_criteria",
+          "branch",
+          "pr_title",
+          "review_focus"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "waves": {
+      "type": "array"
+    }
+  },
+  "required": [
+    "slices"
+  ],
+  "type": "object"
+}

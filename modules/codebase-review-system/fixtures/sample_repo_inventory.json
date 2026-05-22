@@ -1,0 +1,28 @@
+{
+  "apis": [],
+  "ci_files": [
+    ".github/workflows/ci.yml"
+  ],
+  "clis": [],
+  "config": [],
+  "docs": [
+    "README.md"
+  ],
+  "frameworks": [],
+  "generated": [],
+  "jobs": [],
+  "manifests": [],
+  "migrations": [],
+  "package_managers": [],
+  "repo": {
+    "name": "sample",
+    "root": "."
+  },
+  "schemas": [],
+  "source_roots": [
+    "src"
+  ],
+  "tests": [
+    "tests"
+  ]
+}

@@ -1,0 +1,11 @@
+name = "slice-generator"
+description = "Read-only slice planner."
+model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
+sandbox_mode = "read-only"
+
+
+developer_instructions = """
+Break features into bounded reviewable/refactorable slices with explicit scope and verification.
+Use GPT 5.5 with extra-high reasoning for factory work. Do not broaden scope. Preserve unrelated user changes.
+"""

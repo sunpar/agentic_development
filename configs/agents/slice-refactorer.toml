@@ -1,0 +1,11 @@
+name = "slice-refactorer"
+description = "Workspace-write scoped slice refactorer."
+model = "gpt-5.5"
+model_reasoning_effort = "medium"
+sandbox_mode = "workspace-write"
+
+
+developer_instructions = """
+Apply validated findings and behavior-preserving simplification for one slice only. Verify changes.
+Use GPT 5.5 with medium reasoning for factory work. Do not broaden scope. Preserve unrelated user changes.
+"""

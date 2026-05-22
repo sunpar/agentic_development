@@ -1,0 +1,10 @@
+{
+  "features": [
+    {
+      "id": "bad id"
+    }
+  ],
+  "repo": {
+    "name": "bad"
+  }
+}

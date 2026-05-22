@@ -1,0 +1,76 @@
+{
+  "architecture": {
+    "components": [
+      {
+        "dependencies": [],
+        "description": "Core logic",
+        "entry_points": [
+          "src/app.py"
+        ],
+        "id": "COMP-CORE",
+        "name": "Core",
+        "paths": [
+          "src/**"
+        ]
+      }
+    ]
+  },
+  "codebase_summary": "Small sample repo.",
+  "evidence": [
+    {
+      "claim": "Core flow exists",
+      "files": [
+        "src/app.py"
+      ],
+      "notes": "sample"
+    }
+  ],
+  "features": [
+    {
+      "category": "internal-platform",
+      "code_paths": [
+        "src/**"
+      ],
+      "confidence": "medium",
+      "data_models": [],
+      "doc_code_mismatches": [],
+      "docs": [
+        "README.md"
+      ],
+      "entry_points": [
+        "src/app.py"
+      ],
+      "id": "FEAT-CORE",
+      "intended_behavior": "Process input deterministically",
+      "known_risks": [
+        "low coverage"
+      ],
+      "name": "Core flow",
+      "related_components": [
+        "COMP-CORE"
+      ],
+      "related_features": [],
+      "summary": "Runs core flow",
+      "tests": [
+        "tests/**"
+      ],
+      "user_or_system_value": "Useful behavior"
+    }
+  ],
+  "repo": {
+    "analyzed_at": "2026-05-22T00:00:00Z",
+    "ci_files": [
+      ".github/workflows/ci.yml"
+    ],
+    "name": "sample",
+    "package_managers": [],
+    "primary_languages": [
+      "python"
+    ],
+    "root": ".",
+    "test_commands": [
+      "python3 -m unittest"
+    ]
+  },
+  "unknowns": []
+}

@@ -1,0 +1,11 @@
+name = "ci-debugger"
+description = "Workspace-write CI debugger."
+model = "gpt-5.3-codex-spark"
+model_reasoning_effort = "xhigh"
+sandbox_mode = "workspace-write"
+
+
+developer_instructions = """
+Investigate failing CI and apply minimal scoped fixes. Must not merge.
+Use GPT 5.3 Codex Spark with extra-high reasoning for factory work. Do not broaden scope. Preserve unrelated user changes.
+"""

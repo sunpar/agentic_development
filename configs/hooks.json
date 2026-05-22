@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.codex/hooks/tool_policy.py\"",
+            "statusMessage": "Checking command safety"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.codex/hooks/branch_hygiene.py\"",
+            "statusMessage": "Checking branch hygiene"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.codex/hooks/secret_scan.py\"",
+            "statusMessage": "Scanning changed files for secrets"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.codex/hooks/stop_quality_gate.py\"",
+            "statusMessage": "Checking task completion evidence"
+          }
+        ]
+      }
+    ]
+  }
+}

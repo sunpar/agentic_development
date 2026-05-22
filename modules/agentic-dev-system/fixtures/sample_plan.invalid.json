@@ -1,0 +1,36 @@
+{
+  "feature": "agentic-invalid",
+  "source_documents": [],
+  "assumptions": [],
+  "open_questions": [],
+  "epics": [
+    {"id": "E1", "title": "Broken epic", "description": "Missing scope"}
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "epic_id": "E_MISSING",
+      "wave": 1,
+      "title": "Task with missing epic",
+      "branch": "agentic-invalid-t1",
+      "objective": "Fail on purpose",
+      "non_goals": [],
+      "context_to_load": [],
+      "read_set": [],
+      "write_set": ["service/api.py", "service/api.py"],
+      "dependencies": ["T2"],
+      "parallel_conflicts": [],
+      "implementation_steps": [],
+      "tests_to_write_first": [],
+      "verification_commands": [],
+      "acceptance_criteria": [],
+      "review_focus": [],
+      "rollback_notes": ""
+    }
+  ],
+  "waves": [{
+    "wave": 1,
+    "task_ids": ["T1", "T2"],
+    "post_wave_verification": []
+  }]
+}

@@ -1,0 +1,79 @@
+{
+  "slices": [
+    {
+      "acceptance_criteria": [
+        "tests pass"
+      ],
+      "branch": "codebase-review/SLICE-001-review-core-flow",
+      "dependencies": [],
+      "description": "Review and simplify core flow",
+      "docs_to_read": [
+        "README.md"
+      ],
+      "entry_points": [
+        "src/app.py"
+      ],
+      "expected_pr_size": {
+        "max_files_changed": 8,
+        "max_lines_changed_soft": 500
+      },
+      "feature_id": "FEAT-CORE",
+      "files_allowed_to_edit": [
+        "src/app.py",
+        "tests/test_app.py"
+      ],
+      "files_not_allowed_to_edit": [
+        "pyproject.toml"
+      ],
+      "files_to_read": [
+        "src/app.py"
+      ],
+      "id": "SLICE-001",
+      "intended_behavior": "Behavior remains identical",
+      "invariants": [
+        "output unchanged"
+      ],
+      "non_goals": [
+        "new features"
+      ],
+      "parallel_conflicts": [],
+      "pr_title": "[codebase-review] SLICE-001 Review core flow",
+      "refactor_targets": [
+        "simplify branches"
+      ],
+      "review_focus": [
+        "behavior preservation"
+      ],
+      "review_questions": [
+        "is error handling clear?"
+      ],
+      "risk": "low",
+      "risk_notes": [],
+      "slice_type": "refactor-simplify",
+      "tests_to_read": [
+        "tests/test_app.py"
+      ],
+      "title": "Review core flow",
+      "verification_commands": [
+        "python3 -m unittest"
+      ],
+      "why_this_slice_exists": "Core path deserves review"
+    }
+  ],
+  "waves": [
+    {
+      "integration_order": [
+        "SLICE-001"
+      ],
+      "parallel_safety_rationale": "single slice",
+      "post_wave_verification_commands": [
+        "python3 -m unittest"
+      ],
+      "preconditions": [],
+      "slice_ids": [
+        "SLICE-001"
+      ],
+      "wave": 1
+    }
+  ]
+}

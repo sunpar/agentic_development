@@ -1,0 +1,11 @@
+# Agentic Development optional Codex config template.
+#
+# This file is intentionally minimal and public-safe. Review and merge it into
+# your own ~/.codex/config.toml manually if needed.
+
+sandbox_mode = "workspace-write"
+
+[profiles.agentic-development]
+model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
+

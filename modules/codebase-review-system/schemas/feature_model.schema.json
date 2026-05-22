@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "architecture": {
+      "required": [
+        "components"
+      ],
+      "type": "object"
+    },
+    "codebase_summary": {
+      "type": "string"
+    },
+    "evidence": {
+      "type": "array"
+    },
+    "features": {
+      "items": {
+        "required": [
+          "id",
+          "name",
+          "category",
+          "summary",
+          "intended_behavior",
+          "user_or_system_value",
+          "entry_points",
+          "code_paths",
+          "docs",
+          "tests",
+          "data_models",
+          "related_components",
+          "related_features",
+          "known_risks",
+          "doc_code_mismatches",
+          "confidence"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "repo": {
+      "required": [
+        "name",
+        "root",
+        "analyzed_at",
+        "primary_languages",
+        "package_managers",
+        "test_commands",
+        "ci_files"
+      ],
+      "type": "object"
+    },
+    "unknowns": {
+      "type": "array"
+    }
+  },
+  "required": [
+    "repo",
+    "codebase_summary",
+    "architecture",
+    "features",
+    "unknowns",
+    "evidence"
+  ],
+  "type": "object"
+}

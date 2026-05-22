@@ -1,0 +1,46 @@
+{
+  "feature": "agentic-sample",
+  "source_documents": ["sample_feature.md"],
+  "assumptions": ["service exposes health route"],
+  "open_questions": [],
+  "epics": [
+    {
+      "id": "E1",
+      "title": "Add route endpoint",
+      "description": "Add health endpoint contract and tests."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "epic_id": "E1",
+      "wave": 1,
+      "title": "Add health route test-first",
+      "branch": "agentic-dev-sample-t1",
+      "objective": "Add endpoint test and implementation with explicit response format.",
+      "non_goals": ["Add new framework"],
+      "context_to_load": ["service/app/routes"],
+      "read_set": ["service/app/routes", "service/app/README.md"],
+      "write_set": ["service/app/routes/health.py", "service/tests/test_health.py"],
+      "dependencies": [],
+      "parallel_conflicts": [],
+      "implementation_steps": [
+        "Write failing tests for /health",
+        "Implement route with deterministic JSON",
+        "Run verification"
+      ],
+      "tests_to_write_first": ["pytest service/tests/test_health.py"],
+      "verification_commands": ["pytest service/tests/test_health.py"],
+      "acceptance_criteria": ["`GET /health` returns 200 and version field"],
+      "review_focus": ["schema stability", "error handling"],
+      "rollback_notes": "Drop route file and revert test file if merge fails."
+    }
+  ],
+  "waves": [
+    {
+      "wave": 1,
+      "task_ids": ["T1"],
+      "post_wave_verification": ["pytest service/tests/test_health.py"]
+    }
+  ]
+}
