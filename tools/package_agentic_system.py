@@ -88,6 +88,7 @@ def build_package(staging: Path) -> tuple[list[str], list[str]]:
         (CODEX_HOME / "codebase-review-factory", root / ".codex" / "codebase-review-factory"),
         (AGENTS_HOME / "skills", root / ".agents" / "skills"),
         (WORKSPACE / "scripts" / "package_agentic_system.py", root / "tools" / "package_agentic_system.py"),
+        (WORKSPACE / "scripts" / "run_agentic_review_refactor.sh", root / "tools" / "run_agentic_review_refactor.sh"),
     ]
 
     for src, dst in sources:
@@ -125,7 +126,8 @@ def build_package(staging: Path) -> tuple[list[str], list[str]]:
         "2. Review `.codex/config.toml` before sharing or applying it elsewhere; it contains local trust paths, plugin metadata, app connector IDs, and runtime paths.\n"
         "3. Copy `.codex/agentic-dev-system` and `.codex/codebase-review-factory` into a target `~/.codex` only after backing up existing files.\n"
         "4. Copy `.codex/agents`, `.codex/hooks`, `.codex/manual-workflows`, `.codex/skills/manual-workflow-loader`, `AGENTS.md`, `config.toml`, and `hooks.json` only after reviewing local differences.\n"
-        "5. Run the validation commands in `docs/EXAMPLES.md` before using the system on a project repository.\n",
+        "5. Optionally review `tools/run_agentic_review_refactor.sh` for the one-shot review/refactor wrapper.\n"
+        "6. Run the validation commands in `docs/EXAMPLES.md` before using the system on a project repository.\n",
     )
     return included, missing
 

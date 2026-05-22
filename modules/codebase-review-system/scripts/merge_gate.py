@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import re
 import subprocess
@@ -64,6 +65,7 @@ def pr_view(repo, pr):
         'headRefOid',
         'headRefName',
         'baseRefName',
+        'latestReviews',
         'url',
     ])
     cmd = ['gh', 'pr', 'view']
@@ -74,21 +76,56 @@ def pr_view(repo, pr):
 
 
 def required_checks_green(repo, pr, timeout, interval):
+    deadline = time.time() + timeout if timeout > 0 else time.time()
+    while True:
+        try:
+            checks = load_required_checks(repo, pr)
+        except RuntimeError as exc:
+            if 'no checks reported' not in str(exc):
+                raise
+            checks = []
+            pending = ['checks not reported yet']
+            bad = []
+        else:
+            pending = []
+            bad = []
+            for check in checks:
+                bucket = str(check.get('bucket') or '').lower()
+                state = str(check.get('state') or '').upper()
+                if bucket in {'pass', 'skipping'} or state in {'SUCCESS', 'SKIPPED', 'NEUTRAL'}:
+                    continue
+                if bucket in {'pending', 'waiting'} or state in {'PENDING', 'QUEUED', 'IN_PROGRESS', 'EXPECTED'}:
+                    pending.append(check.get('name') or state or bucket or 'unknown')
+                else:
+                    bad.append(check.get('name') or state or bucket or 'unknown')
+        if bad:
+            raise RuntimeError('required checks not green: ' + ', '.join(bad))
+        if not pending:
+            return checks
+        if timeout <= 0 or time.time() >= deadline:
+            raise subprocess.TimeoutExpired(['gh', 'pr', 'checks'], timeout)
+        time.sleep(max(1, interval))
+
+
+def load_required_checks(repo, pr):
+    try:
+        return load_checks(repo, pr, required=True)
+    except RuntimeError as exc:
+        if 'no required checks reported' not in str(exc):
+            raise
+        return load_checks(repo, pr, required=False)
+
+
+def load_checks(repo, pr, required):
     cmd = ['gh', 'pr', 'checks']
     if pr:
         cmd.append(str(pr))
-    cmd += ['--required', '--watch', '--interval', str(interval), '--json', 'name,state,bucket']
-    checks = load_json_command(cmd, cwd=repo, timeout=timeout)
+    if required:
+        cmd.append('--required')
+    cmd += ['--json', 'name,state,bucket']
+    checks = load_json_command(cmd, cwd=repo)
     if not isinstance(checks, list):
         raise RuntimeError('gh pr checks returned non-list JSON')
-    bad = []
-    for check in checks:
-        bucket = str(check.get('bucket') or '').lower()
-        state = str(check.get('state') or '').upper()
-        if bucket not in {'pass', 'skipping'} and state not in {'SUCCESS', 'SKIPPED', 'NEUTRAL'}:
-            bad.append(check.get('name') or state or bucket or 'unknown')
-    if bad:
-        raise RuntimeError('required checks not green: ' + ', '.join(bad))
     return checks
 
 
@@ -159,7 +196,7 @@ def unresolved_must_fix_threads(threads):
     return matches
 
 
-def validate_pr(view, expected_head_sha):
+def validate_pr(view, expected_head_sha, final=True, allow_review_required=False):
     if str(view.get('state', '')).upper() != 'OPEN':
         raise RuntimeError(f'PR is not open: {view.get("state")}')
     if view.get('isDraft'):
@@ -168,11 +205,56 @@ def validate_pr(view, expected_head_sha):
         raise RuntimeError(f'head SHA mismatch: expected {expected_head_sha}, got {view.get("headRefOid")}')
     mergeable = str(view.get('mergeable') or '').upper()
     merge_state = str(view.get('mergeStateStatus') or '').upper()
-    if mergeable != 'MERGEABLE' or merge_state in {'UNKNOWN', 'DIRTY', 'BLOCKED', 'BEHIND', 'UNSTABLE'}:
+    blocking_states = {'DIRTY', 'BLOCKED', 'BEHIND'}
+    if final:
+        blocking_states |= {'UNKNOWN', 'UNSTABLE'}
+    if mergeable != 'MERGEABLE' or merge_state in blocking_states:
         raise RuntimeError(f'PR mergeability is not clean: mergeable={mergeable} mergeStateStatus={merge_state}')
     decision = str(view.get('reviewDecision') or '').upper()
-    if decision in {'CHANGES_REQUESTED', 'REVIEW_REQUIRED'}:
+    blocked_decisions = {'CHANGES_REQUESTED', 'REVIEW_REQUIRED'}
+    if allow_review_required:
+        blocked_decisions.remove('REVIEW_REQUIRED')
+    if decision in blocked_decisions:
         raise RuntimeError(f'PR review decision blocks merge: {decision}')
+
+
+def parse_github_time(value):
+    if not value:
+        return None
+    normalized = value.replace('Z', '+00:00')
+    return _dt.datetime.fromisoformat(normalized)
+
+
+def require_review_after(view, requested_at):
+    if not requested_at:
+        return
+    requested = parse_github_time(requested_at)
+    for review in view.get('latestReviews') or []:
+        state = str(review.get('state') or '').upper()
+        if state in {'PENDING', 'DISMISSED'}:
+            continue
+        submitted = parse_github_time(review.get('submittedAt'))
+        if submitted and submitted >= requested:
+            if state == 'CHANGES_REQUESTED':
+                raise RuntimeError('review submitted after request blocks merge: CHANGES_REQUESTED')
+            return
+    raise RuntimeError('no completed review submitted after requested review')
+
+
+def wait_for_required_review(repo, pr, requested_at, timeout_seconds, poll_seconds, expected_head_sha):
+    deadline = time.time() + timeout_seconds if timeout_seconds > 0 else time.time()
+    while True:
+        view = pr_view(repo, pr)
+        validate_pr(view, expected_head_sha, final=True, allow_review_required=True)
+        try:
+            require_review_after(view, requested_at)
+            return view
+        except RuntimeError as exc:
+            if 'no completed review submitted after requested review' not in str(exc):
+                raise
+            if timeout_seconds <= 0 or time.time() >= deadline:
+                raise
+        time.sleep(max(1, poll_seconds))
 
 
 def merge_command(pr, method, head_sha, delete_branch):
@@ -213,6 +295,7 @@ def parse_args():
     ap.add_argument('--ci-timeout-seconds', type=int, default=1800)
     ap.add_argument('--ci-poll-seconds', type=int, default=15)
     ap.add_argument('--review-timeout-seconds', type=int, default=0)
+    ap.add_argument('--require-review-after')
     ap.add_argument('--dry-run', action='store_true')
     return ap.parse_args()
 
@@ -224,8 +307,19 @@ def main():
         if not clean_local_state(repo):
             return fail('local state is not clean')
         view = pr_view(repo, args.pr)
-        validate_pr(view, args.expected_head_sha)
+        validate_pr(view, args.expected_head_sha, final=False, allow_review_required=bool(args.require_review_after))
         required_checks_green(repo, args.pr, args.ci_timeout_seconds, args.ci_poll_seconds)
+        view = pr_view(repo, args.pr)
+        validate_pr(view, args.expected_head_sha, final=True, allow_review_required=bool(args.require_review_after))
+        if args.require_review_after:
+            view = wait_for_required_review(
+                repo,
+                args.pr,
+                args.require_review_after,
+                args.review_timeout_seconds,
+                args.ci_poll_seconds,
+                args.expected_head_sha,
+            )
         wait_for_review_threads_clear(repo, view.get('number') or args.pr, args.review_timeout_seconds, args.ci_poll_seconds)
 
         if args.no_merge:

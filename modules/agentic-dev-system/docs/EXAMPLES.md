@@ -147,14 +147,16 @@ python3 ~/.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py docs
 Run validated waves with external run state and no merge:
 
 ```bash
-python3 ~/.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py docs/agentic-system/review/slice-plan.json docs/agentic-system/review/slice-plan.json --max-parallel 999 --allow-pr --allow-review-request --no-merge
+python3 ~/.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py docs/agentic-system/review/slice-plan.json docs/agentic-system/review/slice-plan.json --setup-command 'make install' --max-parallel 999 --allow-pr --allow-review-request --no-merge
 ```
 
 Run with explicit opt-in merge gates:
 
 ```bash
-python3 ~/.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py docs/agentic-system/review/slice-plan.json docs/agentic-system/review/slice-plan.json --max-parallel 999 --allow-pr --allow-review-request --allow-merge --merge-method squash
+python3 ~/.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py docs/agentic-system/review/slice-plan.json docs/agentic-system/review/slice-plan.json --setup-command 'make install' --max-parallel 999 --allow-pr --allow-review-request --allow-merge --merge-method squash
 ```
+
+Use `--setup-command` for repo-specific dependency setup that each slice worktree needs before Codex and verification. The flag is repeatable.
 
 ## PR Review Comment Follow-Up
 

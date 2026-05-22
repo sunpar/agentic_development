@@ -130,6 +130,7 @@ def build_package(staging: Path) -> tuple[list[str], list[str]]:
         (CODEX_HOME / "codebase-review-factory", root / "modules" / "codebase-review-system"),
         (WORKSPACE / "scripts" / "package_agentic_system.py", root / "tools" / "package_agentic_system.py"),
         (WORKSPACE / "scripts" / "package_reviewer_upload.py", root / "tools" / "package_reviewer_upload.py"),
+        (WORKSPACE / "scripts" / "run_agentic_review_refactor.sh", root / "tools" / "run_agentic_review_refactor.sh"),
     ]
 
     # Original layout, but without hidden top-level names.
@@ -180,6 +181,7 @@ def write_reviewer_docs(root: Path, included: list[str], missing: list[str]) -> 
         "- `fixtures/`: sample validation inputs\n"
         "- `manual-workflows/`: manual workflow docs and support scripts\n"
         "- `modules/`: complete compatibility module copies\n"
+        "- `tools/run_agentic_review_refactor.sh`: one-shot repo inventory, feature-model, slice generation, and orchestration wrapper\n"
         "- `original-layout/`: review copy of the local `.codex` and `.agents` layout\n",
     )
     write_text(

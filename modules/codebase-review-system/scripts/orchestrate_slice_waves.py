@@ -6,6 +6,7 @@ import argparse
 import concurrent.futures
 import datetime as _dt
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -68,10 +69,23 @@ def run_cmd(cmd, cwd=None, timeout=None):
     )
 
 
+def worktree_shell_env(cwd: Path):
+    env = os.environ.copy()
+    root = Path(cwd)
+    env['VIRTUAL_ENV'] = str(root / '.venv')
+    env['PATH'] = os.pathsep.join([
+        str(root / '.venv' / 'bin'),
+        str(root / 'frontend' / 'node_modules' / '.bin'),
+        env.get('PATH', ''),
+    ])
+    return env
+
+
 def run_shell(command: str, cwd: Path):
     return subprocess.run(
         command,
         cwd=cwd,
+        env=worktree_shell_env(cwd),
         shell=True,
         text=True,
         stdout=subprocess.PIPE,
@@ -128,6 +142,43 @@ def command_exists(name):
     return shutil.which(name) is not None
 
 
+def path_executables(name):
+    seen = set()
+    candidates = []
+    for directory in os.environ.get('PATH', '').split(os.pathsep):
+        if not directory:
+            continue
+        candidate = Path(directory) / name
+        if str(candidate) in seen:
+            continue
+        seen.add(str(candidate))
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            candidates.append(candidate)
+    return candidates
+
+
+def resolve_codex_binary(explicit=None):
+    candidates = []
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    else:
+        candidates.extend(path_executables('codex'))
+        app_binary = Path('/Applications/Codex.app/Contents/Resources/codex')
+        if app_binary not in candidates:
+            candidates.append(app_binary)
+
+    failures = []
+    for candidate in candidates:
+        result = run_cmd([str(candidate), '--version'], timeout=15)
+        if result.returncode == 0:
+            return str(candidate.resolve())
+        failures.append(f'{candidate}: {(result.stderr or result.stdout or "failed").strip()}')
+        if explicit:
+            break
+    detail = '; '.join(failures) if failures else 'no codex executable found on PATH'
+    raise RuntimeError('no working codex binary found: ' + detail)
+
+
 def gh_auth_ok(cwd):
     return run_cmd(['gh', 'auth', 'status'], cwd=cwd).returncode == 0
 
@@ -144,6 +195,35 @@ def valid_branch_name(branch, cwd):
     return run_cmd(['git', 'check-ref-format', '--branch', branch], cwd=cwd).returncode == 0
 
 
+def rev_parse(cwd, rev):
+    result = run_cmd(['git', 'rev-parse', '--verify', rev], cwd=cwd)
+    if result.returncode:
+        raise RuntimeError(result.stderr or f'git rev-parse failed for {rev}')
+    return result.stdout.strip()
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with Path(path).open('rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def origin_url(cwd):
+    result = run_cmd(['git', 'remote', 'get-url', 'origin'], cwd=cwd)
+    return result.stdout.strip() if result.returncode == 0 else ''
+
+
+def slice_branch_map(plan):
+    branches = {}
+    for item in plan.get('slices', []):
+        if isinstance(item, dict) and item.get('id'):
+            sid = item['id']
+            branches[sid] = item.get('branch') or f'codebase-review/{sid.lower()}'
+    return branches
+
+
 def parse_status_paths(output):
     paths = []
     for line in output.splitlines():
@@ -151,16 +231,35 @@ def parse_status_paths(output):
             continue
         path = line[3:]
         if ' -> ' in path:
-            path = path.split(' -> ', 1)[1]
+            before, after = path.split(' -> ', 1)
+            paths.append(before.strip('"'))
+            path = after
         paths.append(path.strip('"'))
     return paths
 
 
 def changed_paths(cwd):
-    result = run_cmd(['git', 'status', '--porcelain'], cwd=cwd)
+    result = run_cmd(['git', 'status', '--porcelain=v1', '-z'], cwd=cwd)
     if result.returncode:
         raise RuntimeError(result.stderr or 'git status failed')
-    return parse_status_paths(result.stdout)
+    entries = result.stdout.split('\0')
+    paths = []
+    idx = 0
+    while idx < len(entries):
+        entry = entries[idx]
+        if not entry:
+            idx += 1
+            continue
+        status = entry[:2]
+        path = entry[3:]
+        if path:
+            paths.append(path)
+        if status[0] in {'R', 'C'} or status[1] in {'R', 'C'}:
+            idx += 1
+            if idx < len(entries) and entries[idx]:
+                paths.append(entries[idx])
+        idx += 1
+    return list(dict.fromkeys(paths))
 
 
 def path_allowed(path, patterns):
@@ -233,7 +332,18 @@ def ensure_clean_or_orchestration_only(repo, slice_plan, waves_path):
         raise RuntimeError('unrelated dirty changes before orchestration: ' + ', '.join(bad))
 
 
-def create_or_reuse_worktree(repo, worktree_dir, branch, base_ref, reuse):
+def create_or_reuse_worktree(
+    repo,
+    worktree_dir,
+    branch,
+    base_ref,
+    reuse,
+    allowed=None,
+    allow_scoped_dirty=False,
+    slice_id=None,
+    slice_dir=None,
+    reset_stale_clean=False,
+):
     if not valid_branch_name(branch, repo):
         raise RuntimeError(f'invalid branch name: {branch}')
     worktree_dir.mkdir(parents=True, exist_ok=True)
@@ -246,13 +356,32 @@ def create_or_reuse_worktree(repo, worktree_dir, branch, base_ref, reuse):
         actual = current_branch(path)
         if actual != branch:
             raise RuntimeError(f'stale worktree {path}: expected branch {branch}, found {actual}')
+        if slice_id and slice_dir:
+            move_legacy_slice_artifacts(path, slice_id, slice_dir)
         dirty = changed_paths(path)
         if dirty:
-            raise RuntimeError(f'reused worktree is not clean: {path}: {", ".join(dirty)}')
+            if not allow_scoped_dirty:
+                raise RuntimeError(f'reused worktree is not clean: {path}: {", ".join(dirty)}')
+            outside = [changed for changed in dirty if not path_allowed(changed, allowed or [])]
+            if outside:
+                raise RuntimeError(f'reused worktree has out-of-scope dirty changes: {path}: {", ".join(outside)}')
         ancestor = run_cmd(['git', 'merge-base', '--is-ancestor', base_ref, 'HEAD'], cwd=path)
+        reset_info = None
         if ancestor.returncode:
-            raise RuntimeError(f'reused worktree is not based on {base_ref}: {path}')
-        return path
+            if not reset_stale_clean or dirty:
+                raise RuntimeError(f'reused worktree is not based on {base_ref}: {path}')
+            old_head = rev_parse(path, 'HEAD')
+            new_base = rev_parse(path, base_ref)
+            reset = run_cmd(['git', 'reset', '--hard', base_ref], cwd=path)
+            if reset.returncode:
+                raise RuntimeError(reset.stderr or reset.stdout or f'git reset --hard {base_ref} failed')
+            reset_info = {
+                'old_head': old_head,
+                'new_head': new_base,
+                'base_ref': base_ref,
+                'reason': 'clean reused worktree was behind or had squash-merged prior-wave history',
+            }
+        return path, bool(dirty), reset_info
     if existing_branch and not reuse:
         raise RuntimeError(f'branch already exists: {branch}')
     if existing_branch:
@@ -262,32 +391,99 @@ def create_or_reuse_worktree(repo, worktree_dir, branch, base_ref, reuse):
     result = run_cmd(cmd, cwd=repo)
     if result.returncode:
         raise RuntimeError(result.stderr or result.stdout or 'git worktree add failed')
-    return path
+    reset_info = None
+    if existing_branch:
+        ancestor = run_cmd(['git', 'merge-base', '--is-ancestor', base_ref, 'HEAD'], cwd=path)
+        if ancestor.returncode:
+            if not reset_stale_clean:
+                raise RuntimeError(f'reused branch is not based on {base_ref}: {branch}')
+            old_head = rev_parse(path, 'HEAD')
+            new_base = rev_parse(path, base_ref)
+            reset = run_cmd(['git', 'reset', '--hard', base_ref], cwd=path)
+            if reset.returncode:
+                raise RuntimeError(reset.stderr or reset.stdout or f'git reset --hard {base_ref} failed')
+            reset_info = {
+                'old_head': old_head,
+                'new_head': new_base,
+                'base_ref': base_ref,
+                'reason': 'clean reused branch was behind or had squash-merged prior-wave history',
+            }
+    return path, False, reset_info
 
 
-def state_initial(repo, run_dir, slice_plan):
+def state_initial(repo, run_dir, slice_plan, waves_path, plan_hash, waves_hash, branches, remote_url):
     return {
         'created_at': now_utc(),
         'repo': str(repo),
+        'repo_remote_url': remote_url,
         'run_dir': str(run_dir),
         'slice_plan': str(slice_plan),
+        'waves_path': str(waves_path),
+        'slice_plan_sha256': plan_hash,
+        'waves_sha256': waves_hash,
+        'slice_branches': branches,
         'waves': {},
         'slices': {},
     }
 
 
-def load_state(run_dir, repo, slice_plan, resume):
+def validate_or_migrate_state(state, run_dir, repo, slice_plan, waves_path, plan_hash, waves_hash, branches, remote_url):
+    required_binding_keys = {
+        'repo_remote_url',
+        'slice_plan_sha256',
+        'waves_sha256',
+        'slice_branches',
+    }
+    has_saved_progress = any(
+        isinstance(item, dict) and item.get('status') in {'succeeded', 'no_changes', 'pr_ready', 'merged', 'running', 'failed'}
+        for item in (state.get('slices') or {}).values()
+    )
+    if has_saved_progress:
+        missing = sorted(key for key in required_binding_keys if key not in state)
+        if missing:
+            raise RuntimeError('run-state is missing binding metadata: ' + ', '.join(missing))
+    if state.get('repo') and Path(state['repo']).resolve() != repo:
+        raise RuntimeError(f'run-state repo mismatch: expected {repo}, got {state.get("repo")}')
+    if state.get('slice_plan') and Path(state['slice_plan']).resolve() != slice_plan:
+        raise RuntimeError(f'run-state slice plan path mismatch: expected {slice_plan}, got {state.get("slice_plan")}')
+    if state.get('waves_path') and Path(state['waves_path']).resolve() != waves_path:
+        raise RuntimeError(f'run-state waves path mismatch: expected {waves_path}, got {state.get("waves_path")}')
+    if state.get('repo_remote_url') is not None and state.get('repo_remote_url') != remote_url:
+        raise RuntimeError('run-state repo remote mismatch')
+    if state.get('slice_plan_sha256') is not None and state.get('slice_plan_sha256') != plan_hash:
+        raise RuntimeError('run-state slice plan hash mismatch')
+    if state.get('waves_sha256') is not None and state.get('waves_sha256') != waves_hash:
+        raise RuntimeError('run-state waves hash mismatch')
+    if state.get('slice_branches') is not None and state.get('slice_branches') != branches:
+        raise RuntimeError('run-state slice branch map mismatch')
+
+    state.setdefault('repo', str(repo))
+    state.setdefault('repo_remote_url', remote_url)
+    state.setdefault('run_dir', str(run_dir))
+    state.setdefault('slice_plan', str(slice_plan))
+    state.setdefault('waves_path', str(waves_path))
+    state.setdefault('slice_plan_sha256', plan_hash)
+    state.setdefault('waves_sha256', waves_hash)
+    state.setdefault('slice_branches', branches)
+    state.setdefault('waves', {})
+    state.setdefault('slices', {})
+    return state
+
+
+def load_state(run_dir, repo, slice_plan, waves_path, resume, plan_hash, waves_hash, branches, remote_url):
     state_path = run_dir / 'run-state.json'
     if resume and state_path.exists():
-        return load_json(state_path)
-    return state_initial(repo, run_dir, slice_plan)
+        state = load_json(state_path)
+        return validate_or_migrate_state(state, run_dir, repo, slice_plan, waves_path, plan_hash, waves_hash, branches, remote_url)
+    return state_initial(repo, run_dir, slice_plan, waves_path, plan_hash, waves_hash, branches, remote_url)
 
 
-def build_prompt(slice_item, plan_copy):
+def build_prompt(slice_item, plan_copy, artifact_dir):
     return '\n'.join([
         f'Use slice-review-workflow and slice-refactor-workflow for {slice_item["id"]}.',
         f'Slice ID: {slice_item["id"]}',
         f'Slice plan copy: {plan_copy}',
+        f'Write review/refactor result artifacts under this external artifact directory, not inside the target repo: {artifact_dir}',
         f'Allowed edit scope: {slice_item.get("files_allowed_to_edit", [])}',
         f'Files not allowed to edit: {slice_item.get("files_not_allowed_to_edit", [])}',
         f'Verification commands: {slice_item.get("verification_commands", [])}',
@@ -296,11 +492,13 @@ def build_prompt(slice_item, plan_copy):
     ])
 
 
-def codex_command(args, prompt):
-    cmd = ['codex', 'exec'] + MODEL_ARGS
+def codex_command(args, prompt, writable_dirs=None):
+    cmd = [args.codex_bin, 'exec'] + MODEL_ARGS
     if args.codex_profile:
         cmd += ['--profile', args.codex_profile]
     cmd += safe_extra_args(args.codex_extra_args)
+    for directory in writable_dirs or []:
+        cmd += ['--add-dir', str(Path(directory).resolve())]
     cmd.append(prompt)
     return cmd
 
@@ -318,6 +516,10 @@ def verification_results(commands, cwd):
         if result.returncode:
             break
     return results
+
+
+def setup_results(commands, cwd):
+    return verification_results(commands, cwd)
 
 
 def fail_on_verification(results):
@@ -391,9 +593,11 @@ def create_or_reuse_pr(worktree, slice_item, pr_base_branch):
 def request_review(worktree, pr_number, slice_item):
     focus = ', '.join(slice_item.get('review_focus', [])) or 'correctness, tests, API compatibility, slice scope'
     body = f'@codex review\n\nSlice: {slice_item["id"]}\nFocus: {focus}'
+    requested_at = now_utc()
     result = run_cmd(['gh', 'pr', 'comment', str(pr_number), '--body', body], cwd=worktree)
     if result.returncode:
         raise RuntimeError(result.stderr or result.stdout or 'gh pr comment failed')
+    return requested_at
 
 
 def push_branch(worktree):
@@ -410,14 +614,43 @@ def changed_files_in_scope(worktree, allowed):
     return files
 
 
+def move_legacy_slice_artifacts(worktree, slice_id, slice_dir):
+    artifact_root = Path(worktree) / 'docs' / 'agentic-system'
+    if not artifact_root.exists():
+        return []
+    moved = []
+    for artifact in sorted(artifact_root.glob(f'{slice_id}.*.json')):
+        target = slice_dir / artifact.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        artifact.replace(target)
+        moved.append(str(target))
+    for directory in [artifact_root, artifact_root.parent]:
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    return moved
+
+
 def run_slice(slice_item, args, repo, worktree_dir, base_ref, run_dir, plan_copy, state, state_lock, pr_base_branch):
     sid = slice_item['id']
     branch = slice_item.get('branch') or f'codebase-review/{sid.lower()}'
     slice_dir = run_dir / 'slices' / sid
     slice_dir.mkdir(parents=True, exist_ok=True)
+    previous = state.get('slices', {}).get(sid, {})
+    allow_dirty_resume = args.resume and args.reuse_worktrees and previous.get('status') == 'failed'
+    allow_stale_clean_reset = (
+        args.resume
+        and args.reuse_worktrees
+        and previous.get('status') in {'failed', 'running'}
+        and not previous.get('pr_number')
+        and not previous.get('changed_files')
+        and not previous.get('head_sha')
+    )
     with state_lock:
         state['slices'][sid] = {
             'status': 'running',
+            'slice_id': sid,
             'started_at': now_utc(),
             'branch': branch,
             'base_ref': base_ref,
@@ -425,24 +658,45 @@ def run_slice(slice_item, args, repo, worktree_dir, base_ref, run_dir, plan_copy
         write_json(run_dir / 'run-state.json', state)
 
     try:
-        worktree = create_or_reuse_worktree(repo, worktree_dir, branch, base_ref, args.reuse_worktrees)
+        worktree, resumed_dirty, reset_info = create_or_reuse_worktree(
+            repo,
+            worktree_dir,
+            branch,
+            base_ref,
+            args.reuse_worktrees,
+            allowed=slice_item.get('files_allowed_to_edit', []),
+            allow_scoped_dirty=allow_dirty_resume,
+            slice_id=sid,
+            slice_dir=slice_dir,
+            reset_stale_clean=allow_stale_clean_reset,
+        )
         base_sha = run_cmd(['git', 'rev-parse', 'HEAD'], cwd=worktree).stdout.strip()
-        prompt = build_prompt(slice_item, plan_copy)
-        cmd = codex_command(args, prompt)
-        codex = run_cmd(cmd, cwd=worktree)
-        (slice_dir / 'codex.stdout.log').write_text(codex.stdout, encoding='utf-8')
-        (slice_dir / 'codex.stderr.log').write_text(codex.stderr, encoding='utf-8')
-        if codex.returncode:
-            raise RuntimeError(f'codex exited {codex.returncode}')
+        setup = setup_results(args.setup_command, worktree)
+        write_json(slice_dir / 'setup.json', setup)
+        failed_setup = fail_on_verification(setup)
+        if failed_setup:
+            raise RuntimeError(f'setup failed: {failed_setup["command"]}')
 
+        if not resumed_dirty:
+            prompt = build_prompt(slice_item, plan_copy, slice_dir)
+            cmd = codex_command(args, prompt, writable_dirs=[run_dir])
+            codex = run_cmd(cmd, cwd=worktree)
+            (slice_dir / 'codex.stdout.log').write_text(codex.stdout, encoding='utf-8')
+            (slice_dir / 'codex.stderr.log').write_text(codex.stderr, encoding='utf-8')
+            if codex.returncode:
+                raise RuntimeError(f'codex exited {codex.returncode}')
+
+        moved_artifacts = move_legacy_slice_artifacts(worktree, sid, slice_dir)
         changed_files_in_scope(worktree, slice_item.get('files_allowed_to_edit', []))
         verify = verification_results(slice_item.get('verification_commands', []), worktree)
         write_json(slice_dir / 'verification.json', verify)
         failed = fail_on_verification(verify)
         if failed:
             raise RuntimeError(f'verification failed: {failed["command"]}')
+        moved_artifacts += move_legacy_slice_artifacts(worktree, sid, slice_dir)
         files = changed_files_in_scope(worktree, slice_item.get('files_allowed_to_edit', []))
 
+        review_requested_at = None
         if not files:
             status = 'no_changes'
             head_sha = base_sha
@@ -453,7 +707,7 @@ def run_slice(slice_item, args, repo, worktree_dir, base_ref, run_dir, plan_copy
                 push_branch(worktree)
                 pr_number = create_or_reuse_pr(worktree, slice_item, pr_base_branch)
                 if args.allow_review_request:
-                    request_review(worktree, pr_number, slice_item)
+                    review_requested_at = request_review(worktree, pr_number, slice_item)
                 status = 'pr_ready'
             else:
                 head = run_cmd(['git', 'rev-parse', 'HEAD'], cwd=worktree)
@@ -463,6 +717,7 @@ def run_slice(slice_item, args, repo, worktree_dir, base_ref, run_dir, plan_copy
 
         result = {
             'status': status,
+            'slice_id': sid,
             'completed_at': now_utc(),
             'branch': branch,
             'worktree': str(worktree),
@@ -470,8 +725,14 @@ def run_slice(slice_item, args, repo, worktree_dir, base_ref, run_dir, plan_copy
             'head_sha': head_sha,
             'changed_files': files,
             'pr_number': pr_number,
+            'setup': setup,
             'verification': verify,
+            'artifacts': moved_artifacts,
+            'resumed_from_dirty_worktree': resumed_dirty,
+            'reused_stale_worktree_reset': reset_info,
         }
+        if review_requested_at:
+            result['review_requested_at'] = review_requested_at
         with state_lock:
             state['slices'][sid] = result
             write_json(run_dir / 'run-state.json', state)
@@ -496,6 +757,8 @@ def merge_slice(slice_item, args, run_dir, state):
     pr_number = result.get('pr_number')
     if not pr_number:
         raise RuntimeError(f'{sid} has no PR to merge')
+    if args.allow_review_request and not result.get('review_requested_at'):
+        raise RuntimeError(f'{sid} review request timestamp missing; refusing to auto-merge after review request mode')
     cmd = [
         sys.executable,
         str(SCRIPT_DIR / 'merge_gate.py'),
@@ -508,6 +771,8 @@ def merge_slice(slice_item, args, run_dir, state):
         '--ci-poll-seconds', str(args.ci_poll_seconds),
         '--review-timeout-seconds', str(args.review_timeout_seconds),
     ]
+    if args.allow_review_request:
+        cmd += ['--require-review-after', result['review_requested_at']]
     if args.delete_branch:
         cmd.append('--delete-branch')
     merge = run_cmd(cmd)
@@ -554,6 +819,7 @@ def parse_args():
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--max-parallel', type=int, default=1)
     ap.add_argument('--codex-profile')
+    ap.add_argument('--codex-bin')
     ap.add_argument('--codex-agent')
     ap.add_argument('--codex-extra-args', default='')
     ap.add_argument('--no-pr', action='store_true')
@@ -566,11 +832,12 @@ def parse_args():
     ap.add_argument('--base-ref')
     ap.add_argument('--reuse-worktrees', action='store_true')
     ap.add_argument('--resume', action='store_true')
+    ap.add_argument('--setup-command', action='append', default=[])
     ap.add_argument('--merge-method', choices=['squash', 'merge', 'rebase'], default='squash')
     ap.add_argument('--delete-branch', action='store_true')
     ap.add_argument('--ci-timeout-seconds', type=int, default=1800)
     ap.add_argument('--ci-poll-seconds', type=int, default=15)
-    ap.add_argument('--review-timeout-seconds', type=int, default=0)
+    ap.add_argument('--review-timeout-seconds', type=int, default=1800)
     return ap.parse_args()
 
 
@@ -609,8 +876,7 @@ def main():
     try:
         repo = repo_root('.')
         ensure_clean_or_orchestration_only(repo, slice_plan_path, waves_path)
-        if not command_exists('codex'):
-            raise RuntimeError('codex binary not found')
+        args.codex_bin = resolve_codex_binary(args.codex_bin)
         if (args.allow_pr or args.allow_review_request or merge_enabled) and not command_exists('gh'):
             raise RuntimeError('gh binary not found')
         if (args.allow_pr or args.allow_review_request or merge_enabled) and not gh_auth_ok(repo):
@@ -620,11 +886,15 @@ def main():
         run_dir = Path(args.run_dir).expanduser() if args.run_dir else Path.home() / '.codex' / 'runs' / 'codebase-review' / f'{repo_name}-{_dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")}'
         run_dir = run_dir.resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
-        plan_copy = run_dir / 'slice-plan.json'
-        shutil.copyfile(slice_plan_path, plan_copy)
-        state = load_state(run_dir, repo, slice_plan_path, args.resume)
+        plan_hash = file_sha256(slice_plan_path)
+        waves_hash = file_sha256(waves_path)
+        branches = slice_branch_map(plan)
+        state = load_state(run_dir, repo, slice_plan_path, waves_path, args.resume, plan_hash, waves_hash, branches, origin_url(repo))
+        state['codex_bin'] = args.codex_bin
         state_lock = threading.Lock()
         write_json(run_dir / 'run-state.json', state)
+        plan_copy = run_dir / 'slice-plan.json'
+        shutil.copyfile(slice_plan_path, plan_copy)
 
         default_branch_name = default_branch(repo)
         base_ref = args.base_ref or f'origin/{default_branch_name}'
@@ -661,6 +931,8 @@ def main():
                 state['waves'][wave_id]['status'] = 'failed'
                 state['waves'][wave_id]['completed_at'] = now_utc()
                 write_json(run_dir / 'run-state.json', state)
+                for item in failed:
+                    print(f'{item.get("slice_id", item.get("branch", "slice"))} failed: {item.get("error", "unknown error")}', file=sys.stderr)
                 print(f'wave {wave_id} failed; later waves blocked', file=sys.stderr)
                 return 1
 

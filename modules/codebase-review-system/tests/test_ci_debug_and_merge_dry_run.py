@@ -18,12 +18,11 @@ class TestCiMerge(unittest.TestCase):
         self.assertIn('merge skipped: --allow-merge not provided', result.stdout)
         self.assertNotIn('gh pr merge', result.stdout)
 
-    def test_allow_merge_prints_merge_command(self):
+    def test_allow_merge_is_rejected_by_legacy_helper(self):
         result = self.run_ci('--allow-merge')
-        self.assertEqual(result.returncode, 0)
-        self.assertIn('manual merge wrapper', result.stdout)
-        self.assertIn('does not verify review threads', result.stdout)
-        self.assertIn('gh pr merge --squash', result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('merge execution moved to merge_gate.py', result.stdout)
+        self.assertNotIn('gh pr merge', result.stdout)
 
     def test_no_merge_overrides_allow_merge(self):
         result = self.run_ci('--allow-merge', '--no-merge')
@@ -33,9 +32,10 @@ class TestCiMerge(unittest.TestCase):
 
     def test_pr_number_is_passed_to_checks_and_merge(self):
         result = self.run_ci('--pr', '123', '--allow-merge')
-        self.assertEqual(result.returncode, 0)
+        self.assertNotEqual(result.returncode, 0)
         self.assertIn('gh pr checks 123 --watch=false', result.stdout)
-        self.assertIn('gh pr merge 123 --squash', result.stdout)
+        self.assertIn('merge execution moved to merge_gate.py', result.stdout)
+        self.assertNotIn('gh pr merge', result.stdout)
 
     def test_pr_only_overrides_allow_merge(self):
         result = self.run_ci('--allow-merge', '--pr-only')

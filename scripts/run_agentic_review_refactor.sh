@@ -13,6 +13,7 @@ Options:
   --allow-pr              Allow PR creation/update during slice execution.
   --allow-review-request  Allow requesting Codex/Copilot review on PRs.
   --merge-method METHOD   Merge method for auto-merge mode. Default: squash.
+  --setup-command CMD     Run CMD inside each slice worktree before Codex and verification. Repeatable.
   --skip-codex-refine     Skip the Codex feature-model refinement prompt.
   --codex-profile NAME    Pass a Codex profile to Codex calls.
   --codex-extra-args STR  Extra safe args for Codex/orchestrator calls.
@@ -22,12 +23,13 @@ Options:
 Environment overrides:
   CODEBASE_REVIEW_ROOT    Default: ~/.codex/codebase-review-factory
   CODEX_BIN               Default: codex
-  CODEX_MODEL             Default: gpt-5.5
-  CODEX_REASONING         Default: xhigh
+  CODEX_MODEL             Default: gpt-5.5 for feature-model refinement.
+  CODEX_REASONING         Default: xhigh for feature-model refinement.
 
 Notes:
   The installed orchestrate_slice_waves.py executes validated waves, writes
   external run state, and requires explicit PR/merge flags for side effects.
+  Slice worker model settings are controlled by the installed orchestrator.
 USAGE
 }
 
@@ -46,6 +48,7 @@ skip_codex_refine=0
 codex_profile=""
 codex_extra_args=""
 dry_run_orchestrator=0
+setup_commands=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -77,6 +80,11 @@ while [[ $# -gt 0 ]]; do
     --merge-method)
       [[ $# -ge 2 ]] || die "--merge-method requires a value"
       merge_method="$2"
+      shift 2
+      ;;
+    --setup-command)
+      [[ $# -ge 2 ]] || die "--setup-command requires a value"
+      setup_commands+=("$2")
       shift 2
       ;;
     --skip-codex-refine)
@@ -159,6 +167,10 @@ fi
 if [[ "$dry_run_orchestrator" -eq 1 ]]; then
   orchestrator_args+=(--dry-run)
 fi
+
+for setup_command in "${setup_commands[@]}"; do
+  orchestrator_args+=(--setup-command "$setup_command")
+done
 
 if [[ "$merge_flag" == "--allow-merge" && "$allow_pr" -ne 1 ]]; then
   die "--auto-merge requires --allow-pr"

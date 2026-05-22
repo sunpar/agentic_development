@@ -36,19 +36,8 @@ def main():
         print('merge skipped: --allow-merge not provided')
         return 0
 
-    print('manual merge wrapper: this helper does not verify review threads, draft state, mergeability, or must-fix comments')
-    cmd = ['gh', 'pr', 'merge']
-    if args.pr:
-        cmd.append(args.pr)
-    cmd.append('--' + args.merge_method)
-    if args.auto_merge:
-        cmd.append('--auto')
-    if args.delete_branch:
-        cmd.append('--delete-branch')
-    if args.dry_run:
-        print(' '.join(cmd))
-        return 0
-    return run(cmd)
+    print('merge execution moved to merge_gate.py; this CI helper no longer performs PR merges')
+    return 2
 
 
 if __name__ == '__main__':

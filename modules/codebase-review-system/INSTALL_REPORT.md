@@ -4,7 +4,7 @@ Generated: 2026-05-21T21:18:55
 
 ## Summary
 
-Created the repository intelligence, slice review/refactor, and PR/CI compatibility module under `~/.codex/codebase-review-factory`. No project repository was edited.
+Created the repository intelligence, slice review/refactor, and PR/CI compatibility module under `/Users/sunpar/.codex/codebase-review-factory`. No project repository was edited.
 
 Current maturity note: this is a v0.1 scaffold. It includes inventory, validation, packaging, skills, agents, manual workflows, and dry-run planning helpers. Full feature-task generation and real parallel wave execution remain v0.2 work.
 
@@ -73,19 +73,19 @@ Skill entrypoints:
 
 Active module agents installed:
 
-- `~/.codex/agents/ci-debugger.toml`: model = "gpt-5.3-codex-spark", model_reasoning_effort = "xhigh"
-- `~/.codex/agents/codebase-analyst.toml`: model = "gpt-5.5", model_reasoning_effort = "xhigh"
-- `~/.codex/agents/feature-modeler.toml`: model = "gpt-5.5", model_reasoning_effort = "xhigh"
-- `~/.codex/agents/pr-review-manager.toml`: model = "gpt-5.5", model_reasoning_effort = "medium"
-- `~/.codex/agents/slice-generator.toml`: model = "gpt-5.5", model_reasoning_effort = "xhigh"
-- `~/.codex/agents/slice-refactorer.toml`: model = "gpt-5.5", model_reasoning_effort = "medium"
-- `~/.codex/agents/slice-reviewer.toml`: model = "gpt-5.5", model_reasoning_effort = "xhigh"
-- `~/.codex/agents/wave-orchestrator.toml`: model = "gpt-5.3-codex-spark", model_reasoning_effort = "xhigh"
-- `~/.codex/agents/wave-planner.toml`: model = "gpt-5.5", model_reasoning_effort = "xhigh"
+- `/Users/sunpar/.codex/agents/ci-debugger.toml`: model = "gpt-5.3-codex-spark", model_reasoning_effort = "xhigh"
+- `/Users/sunpar/.codex/agents/codebase-analyst.toml`: model = "gpt-5.5", model_reasoning_effort = "xhigh"
+- `/Users/sunpar/.codex/agents/feature-modeler.toml`: model = "gpt-5.5", model_reasoning_effort = "xhigh"
+- `/Users/sunpar/.codex/agents/pr-review-manager.toml`: model = "gpt-5.5", model_reasoning_effort = "medium"
+- `/Users/sunpar/.codex/agents/slice-generator.toml`: model = "gpt-5.5", model_reasoning_effort = "xhigh"
+- `/Users/sunpar/.codex/agents/slice-refactorer.toml`: model = "gpt-5.5", model_reasoning_effort = "medium"
+- `/Users/sunpar/.codex/agents/slice-reviewer.toml`: model = "gpt-5.5", model_reasoning_effort = "xhigh"
+- `/Users/sunpar/.codex/agents/wave-orchestrator.toml`: model = "gpt-5.3-codex-spark", model_reasoning_effort = "xhigh"
+- `/Users/sunpar/.codex/agents/wave-planner.toml`: model = "gpt-5.5", model_reasoning_effort = "xhigh"
 
 ## Symlink/Junction Status
 
-`~/.agents/skills/codebase-review-factory` -> `~/.codex/codebase-review-factory/skills`
+`/Users/sunpar/.agents/skills/codebase-review-factory` -> `/Users/sunpar/.codex/codebase-review-factory/skills`
 
 Status: created and currently points to module skills.
 

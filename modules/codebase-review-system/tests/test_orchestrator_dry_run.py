@@ -1,9 +1,12 @@
 import json
+import hashlib
+import importlib.util
 import os
 import subprocess
 import sys
 import tempfile
 import textwrap
+import types
 import unittest
 from pathlib import Path
 
@@ -40,6 +43,7 @@ def make_repo(td):
     (repo / 'src').mkdir()
     (repo / 'src' / 'a.txt').write_text('a\n')
     (repo / 'src' / 'b.txt').write_text('b\n')
+    (repo / '.gitignore').write_text('.venv/\n')
     git(repo, 'add', '.')
     git(repo, 'commit', '-m', 'initial')
     return repo
@@ -81,9 +85,40 @@ def write_plan(path, slices, waves):
     path.write_text(json.dumps({'slices': slices, 'waves': waves}, indent=2))
 
 
+def file_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def bound_state(repo, run_dir, plan, slices, waves=None):
+    data = json.loads(Path(plan).read_text())
+    return {
+        'created_at': 'test',
+        'repo': str(repo),
+        'repo_remote_url': '',
+        'run_dir': str(run_dir),
+        'slice_plan': str(plan),
+        'waves_path': str(plan),
+        'slice_plan_sha256': file_sha256(plan),
+        'waves_sha256': file_sha256(plan),
+        'slice_branches': {
+            item['id']: item.get('branch') or f'codebase-review/{item["id"].lower()}'
+            for item in data.get('slices', [])
+        },
+        'waves': waves or {},
+        'slices': slices,
+    }
+
+
 def fake_codex_bin(bin_dir, body):
     codex = Path(bin_dir) / 'codex'
-    codex.write_text('#!/usr/bin/env python3\n' + textwrap.dedent(body))
+    codex.write_text(
+        '#!/usr/bin/env python3\n'
+        'import sys\n'
+        'if sys.argv[1:2] == ["--version"]:\n'
+        '    print("codex fake")\n'
+        '    raise SystemExit(0)\n'
+        + textwrap.dedent(body)
+    )
     codex.chmod(0o755)
 
 
@@ -119,6 +154,13 @@ def fake_gh_bin(bin_dir, fake_dir):
         raise SystemExit(99)
     """))
     gh.chmod(0o755)
+
+
+def load_orchestrator_module():
+    spec = importlib.util.spec_from_file_location('orchestrate_slice_waves_for_test', SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class TestOrchestrator(unittest.TestCase):
@@ -237,6 +279,140 @@ class TestOrchestrator(unittest.TestCase):
             self.assertEqual(state['slices']['SLICE-002']['status'], 'succeeded')
             self.assertFalse((repo / 'run-state.json').exists())
 
+    def test_uses_first_working_codex_binary_from_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            run_dir = Path(td) / 'run'
+            worktrees = Path(td) / 'worktrees'
+            plan = repo / 'slice-plan.json'
+            write_plan(
+                plan,
+                [slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt')],
+                [{'wave': 1, 'slice_ids': ['SLICE-001'], 'integration_order': ['SLICE-001'], 'parallel_safety_rationale': 'single slice'}],
+            )
+            bad_bin = Path(td) / 'bad-bin'
+            good_bin = Path(td) / 'good-bin'
+            bad_bin.mkdir()
+            good_bin.mkdir()
+            broken = bad_bin / 'codex'
+            broken.write_text('#!/usr/bin/env python3\nimport sys\nprint("broken", file=sys.stderr)\nraise SystemExit(1)\n')
+            broken.chmod(0o755)
+            fake_codex_bin(good_bin, """
+                import pathlib
+                pathlib.Path('src/a.txt').write_text('changed\\n')
+            """)
+            env = {**os.environ, 'PATH': f'{bad_bin}{os.pathsep}{good_bin}{os.pathsep}{os.environ["PATH"]}'}
+            result = run([
+                PY, str(SCRIPT), str(plan), str(plan),
+                '--run-dir', str(run_dir),
+                '--worktree-dir', str(worktrees),
+            ], cwd=repo, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            state = json.loads((run_dir / 'run-state.json').read_text())
+            self.assertEqual(Path(state['codex_bin']), (good_bin / 'codex').resolve())
+            self.assertEqual(state['slices']['SLICE-001']['status'], 'succeeded')
+
+    def test_setup_command_runs_before_codex_and_verification(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            run_dir = Path(td) / 'run'
+            worktrees = Path(td) / 'worktrees'
+            plan = repo / 'slice-plan.json'
+            item = slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt')
+            item['verification_commands'] = ['python3 -c "import pathlib; assert pathlib.Path(\'.venv/setup.txt\').read_text() == \'ready\'"']
+            write_plan(
+                plan,
+                [item],
+                [{'wave': 1, 'slice_ids': ['SLICE-001'], 'integration_order': ['SLICE-001'], 'parallel_safety_rationale': 'single slice'}],
+            )
+            bin_dir = Path(td) / 'bin'
+            bin_dir.mkdir()
+            fake_codex_bin(bin_dir, """
+                import pathlib
+                assert pathlib.Path('.venv/setup.txt').read_text() == 'ready'
+                pathlib.Path('src/a.txt').write_text('changed\\n')
+            """)
+            env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'}
+            result = run([
+                PY, str(SCRIPT), str(plan), str(plan),
+                '--run-dir', str(run_dir),
+                '--worktree-dir', str(worktrees),
+                '--setup-command', 'mkdir -p .venv && python3 -c "open(\'.venv/setup.txt\', \'w\').write(\'ready\')"',
+            ], cwd=repo, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            state = json.loads((run_dir / 'run-state.json').read_text())
+            self.assertEqual(state['slices']['SLICE-001']['status'], 'succeeded')
+            self.assertEqual(state['slices']['SLICE-001']['setup'][0]['returncode'], 0)
+            self.assertTrue((run_dir / 'slices' / 'SLICE-001' / 'setup.json').exists())
+
+    def test_codex_gets_run_dir_as_additional_writable_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            run_dir = Path(td) / 'run'
+            worktrees = Path(td) / 'worktrees'
+            plan = repo / 'slice-plan.json'
+            write_plan(
+                plan,
+                [slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt')],
+                [{'wave': 1, 'slice_ids': ['SLICE-001'], 'integration_order': ['SLICE-001'], 'parallel_safety_rationale': 'single slice'}],
+            )
+            bin_dir = Path(td) / 'bin'
+            bin_dir.mkdir()
+            fake_codex_bin(bin_dir, """
+                import json, pathlib, sys
+                pathlib.Path('src/a.txt').write_text(json.dumps(sys.argv))
+            """)
+            env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'}
+            result = run([
+                PY, str(SCRIPT), str(plan), str(plan),
+                '--run-dir', str(run_dir),
+                '--worktree-dir', str(worktrees),
+            ], cwd=repo, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            worktree = worktrees / 'codebase-review-s1'
+            argv = json.loads((worktree / 'src' / 'a.txt').read_text())
+            self.assertIn('--add-dir', argv)
+            self.assertEqual(argv[argv.index('--add-dir') + 1], str(run_dir.resolve()))
+
+    def test_verification_uses_worktree_venv_python(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            run_dir = Path(td) / 'run'
+            worktrees = Path(td) / 'worktrees'
+            plan = repo / 'slice-plan.json'
+            item = slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt')
+            item['verification_commands'] = ['python -c "open(\'src/a.txt\').read()"']
+            write_plan(
+                plan,
+                [item],
+                [{'wave': 1, 'slice_ids': ['SLICE-001'], 'integration_order': ['SLICE-001'], 'parallel_safety_rationale': 'single slice'}],
+            )
+            bin_dir = Path(td) / 'bin'
+            bin_dir.mkdir()
+            fake_codex_bin(bin_dir, """
+                import pathlib
+                pathlib.Path('src/a.txt').write_text('changed\\n')
+            """)
+            setup_command = (
+                "mkdir -p .venv/bin && "
+                "cat > .venv/bin/python <<'SH'\n"
+                "#!/bin/sh\n"
+                "echo used > .venv/used-python\n"
+                "exec python3 \"$@\"\n"
+                "SH\n"
+                'chmod +x .venv/bin/python'
+            )
+            env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'}
+            result = run([
+                PY, str(SCRIPT), str(plan), str(plan),
+                '--run-dir', str(run_dir),
+                '--worktree-dir', str(worktrees),
+                '--setup-command', setup_command,
+            ], cwd=repo, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            worktree = worktrees / 'codebase-review-s1'
+            self.assertEqual((worktree / '.venv' / 'used-python').read_text().strip(), 'used')
+
     def test_failed_slice_blocks_later_waves(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)
@@ -265,6 +441,7 @@ class TestOrchestrator(unittest.TestCase):
             env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'}
             result = run([PY, str(SCRIPT), str(plan), str(plan), '--run-dir', str(run_dir), '--worktree-dir', str(Path(td)/'worktrees')], cwd=repo, env=env)
             self.assertNotEqual(result.returncode, 0)
+            self.assertIn('SLICE-FAIL failed: codex exited 9', result.stderr + result.stdout)
             state = json.loads((run_dir / 'run-state.json').read_text())
             self.assertEqual(state['slices']['SLICE-FAIL']['status'], 'failed')
             self.assertNotIn('SLICE-LATER', state['slices'])
@@ -290,6 +467,73 @@ class TestOrchestrator(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             state = json.loads((run_dir / 'run-state.json').read_text())
             self.assertIn('outside scope', state['slices']['SLICE-001']['error'])
+
+    def test_out_of_scope_rename_source_fails_slice(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            (repo / 'config.yml').write_text('secret: false\n')
+            git(repo, 'add', 'config.yml')
+            git(repo, 'commit', '-m', 'add config')
+            run_dir = Path(td) / 'run'
+            plan = repo / 'slice-plan.json'
+            write_plan(
+                plan,
+                [slice_item('SLICE-001', 'codebase-review/s1', 'src/config.yml')],
+                [{'wave': 1, 'slice_ids': ['SLICE-001'], 'integration_order': ['SLICE-001'], 'parallel_safety_rationale': 'single slice'}],
+            )
+            bin_dir = Path(td) / 'bin'
+            bin_dir.mkdir()
+            fake_codex_bin(bin_dir, """
+                import subprocess
+                subprocess.run(['git', 'mv', 'config.yml', 'src/config.yml'], check=True)
+            """)
+            env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'}
+            result = run([
+                PY, str(SCRIPT), str(plan), str(plan),
+                '--run-dir', str(run_dir),
+                '--worktree-dir', str(Path(td)/'worktrees'),
+            ], cwd=repo, env=env)
+            self.assertNotEqual(result.returncode, 0)
+            state = json.loads((run_dir / 'run-state.json').read_text())
+            self.assertIn('outside scope', state['slices']['SLICE-001']['error'])
+            self.assertIn('config.yml', state['slices']['SLICE-001']['error'])
+
+    def test_legacy_slice_artifacts_are_moved_to_run_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            run_dir = Path(td) / 'run'
+            worktrees = Path(td) / 'worktrees'
+            plan = repo / 'slice-plan.json'
+            write_plan(
+                plan,
+                [slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt')],
+                [{'wave': 1, 'slice_ids': ['SLICE-001'], 'integration_order': ['SLICE-001'], 'parallel_safety_rationale': 'single slice'}],
+            )
+            bin_dir = Path(td) / 'bin'
+            bin_dir.mkdir()
+            fake_codex_bin(bin_dir, """
+                import pathlib
+                pathlib.Path('src/a.txt').write_text('changed\\n')
+                out = pathlib.Path('docs/agentic-system')
+                out.mkdir(parents=True)
+                (out / 'SLICE-001.review-result.json').write_text('{}\\n')
+                (out / 'SLICE-001.refactor-result.json').write_text('{}\\n')
+            """)
+            env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'}
+            result = run([
+                PY, str(SCRIPT), str(plan), str(plan),
+                '--run-dir', str(run_dir),
+                '--worktree-dir', str(worktrees),
+            ], cwd=repo, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            state = json.loads((run_dir / 'run-state.json').read_text())
+            self.assertEqual(state['slices']['SLICE-001']['status'], 'succeeded')
+            slice_dir = run_dir / 'slices' / 'SLICE-001'
+            self.assertTrue((slice_dir / 'SLICE-001.review-result.json').exists())
+            self.assertTrue((slice_dir / 'SLICE-001.refactor-result.json').exists())
+            worktree = worktrees / 'codebase-review-s1'
+            self.assertFalse((worktree / 'docs' / 'agentic-system' / 'SLICE-001.review-result.json').exists())
+            self.assertEqual(run(['git', 'status', '--porcelain'], cwd=worktree).stdout.rstrip(), ' M src/a.txt')
 
     def test_out_of_scope_edit_created_by_verification_fails_slice(self):
         with tempfile.TemporaryDirectory() as td:
@@ -342,6 +586,89 @@ class TestOrchestrator(unittest.TestCase):
             self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
             self.assertEqual(counter.read_text(), '1')
 
+    def test_resume_rejects_state_with_plan_hash_mismatch(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            run_dir = Path(td) / 'run'
+            plan = repo / 'slice-plan.json'
+            write_plan(
+                plan,
+                [slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt')],
+                [{'wave': 1, 'slice_ids': ['SLICE-001'], 'integration_order': ['SLICE-001'], 'parallel_safety_rationale': 'single slice'}],
+            )
+            run_dir.mkdir()
+            (run_dir / 'run-state.json').write_text(json.dumps({
+                'created_at': 'test',
+                'repo': str(repo),
+                'repo_remote_url': '',
+                'run_dir': str(run_dir),
+                'slice_plan': str(plan),
+                'slice_plan_sha256': 'not-the-current-plan',
+                'waves_sha256': 'not-the-current-waves',
+                'slice_branches': {'SLICE-001': 'codebase-review/s1'},
+                'waves': {},
+                'slices': {
+                    'SLICE-001': {
+                        'status': 'merged',
+                        'branch': 'codebase-review/s1',
+                    }
+                },
+            }))
+            bin_dir = Path(td) / 'bin'
+            bin_dir.mkdir()
+            fake_codex_bin(bin_dir, "raise SystemExit(99)")
+            env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'}
+            result = run([
+                PY, str(SCRIPT), str(plan), str(plan),
+                '--run-dir', str(run_dir),
+                '--worktree-dir', str(Path(td)/'worktrees'),
+                '--resume',
+            ], cwd=repo, env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('run-state slice plan hash mismatch', result.stderr + result.stdout)
+
+    def test_resume_rejects_legacy_state_with_saved_slice_progress_without_hashes(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            run_dir = Path(td) / 'run'
+            plan = repo / 'slice-plan.json'
+            write_plan(
+                plan,
+                [slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt')],
+                [{'wave': 1, 'slice_ids': ['SLICE-001'], 'integration_order': ['SLICE-001'], 'parallel_safety_rationale': 'single slice'}],
+            )
+            run_dir.mkdir()
+            (run_dir / 'run-state.json').write_text(json.dumps({
+                'created_at': 'legacy',
+                'repo': str(repo),
+                'run_dir': str(run_dir),
+                'slice_plan': str(plan),
+                'waves': {},
+                'slices': {
+                    'SLICE-001': {
+                        'status': 'pr_ready',
+                        'branch': 'codebase-review/s1',
+                        'worktree': '/tmp/old-worktree',
+                        'head_sha': 'old',
+                        'pr_number': 999,
+                    }
+                },
+            }))
+            bin_dir = Path(td) / 'bin'
+            bin_dir.mkdir()
+            fake_codex_bin(bin_dir, "raise SystemExit(99)")
+            env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'}
+            result = run([
+                PY, str(SCRIPT), str(plan), str(plan),
+                '--run-dir', str(run_dir),
+                '--worktree-dir', str(Path(td)/'worktrees'),
+                '--resume',
+                '--allow-pr',
+                '--allow-merge',
+            ], cwd=repo, env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('run-state is missing binding metadata', result.stderr + result.stdout)
+
     def test_resume_skips_already_merged_slice_during_merge_loop(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)
@@ -354,13 +681,11 @@ class TestOrchestrator(unittest.TestCase):
                 [{'wave': 1, 'slice_ids': ['SLICE-001'], 'integration_order': ['SLICE-001'], 'parallel_safety_rationale': 'single slice'}],
             )
             run_dir.mkdir()
-            (run_dir / 'run-state.json').write_text(json.dumps({
-                'created_at': 'test',
-                'repo': str(repo),
-                'run_dir': str(run_dir),
-                'slice_plan': str(plan),
-                'waves': {},
-                'slices': {
+            (run_dir / 'run-state.json').write_text(json.dumps(bound_state(
+                repo,
+                run_dir,
+                plan,
+                {
                     'SLICE-001': {
                         'status': 'merged',
                         'branch': 'codebase-review/s1',
@@ -369,7 +694,7 @@ class TestOrchestrator(unittest.TestCase):
                         'pr_number': 123,
                     }
                 },
-            }))
+            )))
             bin_dir = Path(td) / 'bin'
             fake_dir = Path(td) / 'fake-gh'
             bin_dir.mkdir()
@@ -387,6 +712,69 @@ class TestOrchestrator(unittest.TestCase):
             ], cwd=repo, env=env)
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertNotIn('pr merge', (fake_dir / 'gh-calls.log').read_text())
+
+    def test_merge_slice_requires_review_after_requested_timestamp(self):
+        with tempfile.TemporaryDirectory() as td:
+            module = load_orchestrator_module()
+            run_dir = Path(td) / 'run'
+            slice_dir = run_dir / 'slices' / 'SLICE-001'
+            slice_dir.mkdir(parents=True)
+            calls = []
+
+            def fake_run_cmd(cmd, cwd=None, timeout=None):
+                calls.append(cmd)
+                return types.SimpleNamespace(returncode=0, stdout='', stderr='')
+
+            module.run_cmd = fake_run_cmd
+            args = types.SimpleNamespace(
+                merge_method='squash',
+                ci_timeout_seconds=1,
+                ci_poll_seconds=1,
+                review_timeout_seconds=1,
+                delete_branch=False,
+                allow_review_request=True,
+            )
+            state = {
+                'slices': {
+                    'SLICE-001': {
+                        'status': 'pr_ready',
+                        'pr_number': 123,
+                        'worktree': str(Path(td)),
+                        'head_sha': 'abc123',
+                        'review_requested_at': '2026-05-22T13:00:00Z',
+                    }
+                }
+            }
+            result = module.merge_slice({'id': 'SLICE-001'}, args, run_dir, state)
+            self.assertTrue(result)
+            self.assertIn('--require-review-after', calls[0])
+            self.assertEqual(calls[0][calls[0].index('--require-review-after') + 1], '2026-05-22T13:00:00Z')
+
+    def test_merge_slice_blocks_review_request_without_timestamp(self):
+        with tempfile.TemporaryDirectory() as td:
+            module = load_orchestrator_module()
+            run_dir = Path(td) / 'run'
+            (run_dir / 'slices' / 'SLICE-001').mkdir(parents=True)
+            args = types.SimpleNamespace(
+                merge_method='squash',
+                ci_timeout_seconds=1,
+                ci_poll_seconds=1,
+                review_timeout_seconds=1,
+                delete_branch=False,
+                allow_review_request=True,
+            )
+            state = {
+                'slices': {
+                    'SLICE-001': {
+                        'status': 'pr_ready',
+                        'pr_number': 123,
+                        'worktree': str(Path(td)),
+                        'head_sha': 'abc123',
+                    }
+                }
+            }
+            with self.assertRaisesRegex(RuntimeError, 'review request timestamp missing'):
+                module.merge_slice({'id': 'SLICE-001'}, args, run_dir, state)
 
     def test_reused_worktree_must_be_clean(self):
         with tempfile.TemporaryDirectory() as td:
@@ -409,6 +797,151 @@ class TestOrchestrator(unittest.TestCase):
                 PY, str(SCRIPT), str(plan), str(plan),
                 '--run-dir', str(run_dir),
                 '--worktree-dir', str(worktrees),
+                '--reuse-worktrees',
+            ], cwd=repo, env=env)
+            self.assertNotEqual(result.returncode, 0)
+            state = json.loads((run_dir / 'run-state.json').read_text())
+            self.assertIn('not clean', state['slices']['SLICE-001']['error'])
+
+    def test_resume_resets_clean_stale_reused_worktree_before_running(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            run_dir = Path(td) / 'run'
+            worktrees = Path(td) / 'worktrees'
+            plan = repo / 'slice-plan.json'
+            write_plan(
+                plan,
+                [slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt')],
+                [{'wave': 1, 'slice_ids': ['SLICE-001'], 'integration_order': ['SLICE-001'], 'parallel_safety_rationale': 'single slice'}],
+            )
+            git(repo, 'worktree', 'add', '-b', 'codebase-review/s1', str(worktrees / 'codebase-review-s1'), 'HEAD')
+            old_head = git(worktrees / 'codebase-review-s1', 'rev-parse', 'HEAD').stdout.strip()
+            (repo / 'src' / 'b.txt').write_text('base moved\n')
+            git(repo, 'add', 'src/b.txt')
+            git(repo, 'commit', '-m', 'advance base')
+            new_base = git(repo, 'rev-parse', 'main').stdout.strip()
+            run_dir.mkdir()
+            (run_dir / 'run-state.json').write_text(json.dumps(bound_state(
+                repo,
+                run_dir,
+                plan,
+                {
+                    'SLICE-001': {
+                        'status': 'failed',
+                        'branch': 'codebase-review/s1',
+                        'error': 'interrupted before codex made changes',
+                    }
+                },
+            )))
+            bin_dir = Path(td) / 'bin'
+            bin_dir.mkdir()
+            fake_codex_bin(bin_dir, """
+                import pathlib
+                pathlib.Path('src/a.txt').write_text('changed after reset\\n')
+            """)
+            env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'}
+            result = run([
+                PY, str(SCRIPT), str(plan), str(plan),
+                '--run-dir', str(run_dir),
+                '--worktree-dir', str(worktrees),
+                '--resume',
+                '--reuse-worktrees',
+                '--base-ref', 'main',
+            ], cwd=repo, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            state = json.loads((run_dir / 'run-state.json').read_text())
+            slice_state = state['slices']['SLICE-001']
+            self.assertEqual(slice_state['status'], 'succeeded')
+            self.assertEqual(slice_state['base_sha'], new_base)
+            self.assertEqual(slice_state['reused_stale_worktree_reset']['old_head'], old_head)
+            self.assertEqual(slice_state['reused_stale_worktree_reset']['new_head'], new_base)
+
+    def test_resume_can_continue_failed_slice_with_scoped_dirty_worktree(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            run_dir = Path(td) / 'run'
+            worktrees = Path(td) / 'worktrees'
+            plan = repo / 'slice-plan.json'
+            write_plan(
+                plan,
+                [slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt')],
+                [{'wave': 1, 'slice_ids': ['SLICE-001'], 'integration_order': ['SLICE-001'], 'parallel_safety_rationale': 'single slice'}],
+            )
+            git(repo, 'worktree', 'add', '-b', 'codebase-review/s1', str(worktrees / 'codebase-review-s1'), 'HEAD')
+            worktree = worktrees / 'codebase-review-s1'
+            (worktree / 'src' / 'a.txt').write_text('dirty allowed change\n')
+            artifact_dir = worktree / 'docs' / 'agentic-system'
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / 'SLICE-001.review-result.json').write_text('{}\n')
+            run_dir.mkdir()
+            (run_dir / 'run-state.json').write_text(json.dumps(bound_state(
+                repo,
+                run_dir,
+                plan,
+                {
+                    'SLICE-001': {
+                        'status': 'failed',
+                        'branch': 'codebase-review/s1',
+                        'base_ref': 'origin/main',
+                        'error': 'outside scope changes: docs/agentic-system/',
+                    }
+                },
+            )))
+            bin_dir = Path(td) / 'bin'
+            bin_dir.mkdir()
+            fake_codex_bin(bin_dir, "raise SystemExit(99)")
+            env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'}
+            result = run([
+                PY, str(SCRIPT), str(plan), str(plan),
+                '--run-dir', str(run_dir),
+                '--worktree-dir', str(worktrees),
+                '--resume',
+                '--reuse-worktrees',
+            ], cwd=repo, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            state = json.loads((run_dir / 'run-state.json').read_text())
+            self.assertEqual(state['slices']['SLICE-001']['status'], 'succeeded')
+            self.assertTrue(state['slices']['SLICE-001']['resumed_from_dirty_worktree'])
+            self.assertTrue((run_dir / 'slices' / 'SLICE-001' / 'SLICE-001.review-result.json').exists())
+
+    def test_resume_refuses_dirty_running_slice_worktree(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            run_dir = Path(td) / 'run'
+            worktrees = Path(td) / 'worktrees'
+            plan = repo / 'slice-plan.json'
+            write_plan(
+                plan,
+                [slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt')],
+                [{'wave': 1, 'slice_ids': ['SLICE-001'], 'integration_order': ['SLICE-001'], 'parallel_safety_rationale': 'single slice'}],
+            )
+            git(repo, 'worktree', 'add', '-b', 'codebase-review/s1', str(worktrees / 'codebase-review-s1'), 'HEAD')
+            worktree = worktrees / 'codebase-review-s1'
+            (worktree / 'src' / 'a.txt').write_text('partial interrupted edit\n')
+            run_dir.mkdir()
+            (run_dir / 'run-state.json').write_text(json.dumps(bound_state(
+                repo,
+                run_dir,
+                plan,
+                {
+                    'SLICE-001': {
+                        'status': 'running',
+                        'branch': 'codebase-review/s1',
+                        'error': None,
+                    }
+                },
+            )))
+            bin_dir = Path(td) / 'bin'
+            bin_dir.mkdir()
+            fake_codex_bin(bin_dir, """
+                raise SystemExit(99)
+            """)
+            env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'}
+            result = run([
+                PY, str(SCRIPT), str(plan), str(plan),
+                '--run-dir', str(run_dir),
+                '--worktree-dir', str(worktrees),
+                '--resume',
                 '--reuse-worktrees',
             ], cwd=repo, env=env)
             self.assertNotEqual(result.returncode, 0)
