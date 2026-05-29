@@ -96,6 +96,59 @@ class FeatureTaskGeneratorTests(unittest.TestCase):
         self.assertIn('python3 -m unittest', task_markdown)
         self.assertEqual(validation.returncode, 0, validation.stderr + validation.stdout)
 
+    def test_orders_generated_waves_after_dependencies_even_when_input_is_later(self):
+        feature_model = {
+            'repo': {
+                'name': 'sample',
+                'test_commands': ['python3 -m unittest'],
+            },
+            'features': [
+                {
+                    'id': 'FEAT-REPORTS',
+                    'name': 'Reports',
+                    'summary': 'Produces reports from core output.',
+                    'intended_behavior': 'Render report output.',
+                    'code_paths': ['src/reports.py'],
+                    'docs': ['docs/reports.md'],
+                    'tests': ['tests/test_reports.py'],
+                    'entry_points': ['src/reports.py'],
+                    'known_risks': [],
+                    'related_features': ['FEAT-CORE'],
+                },
+                {
+                    'id': 'FEAT-CORE',
+                    'name': 'Core Flow',
+                    'summary': 'Runs the core behavior.',
+                    'intended_behavior': 'Process input deterministically.',
+                    'code_paths': ['src/app.py'],
+                    'docs': ['README.md'],
+                    'tests': ['tests/test_app.py'],
+                    'entry_points': ['src/app.py'],
+                    'known_risks': ['low coverage'],
+                    'related_features': [],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            model_path = td_path / 'feature-model.json'
+            out_dir = td_path / 'implementation'
+            model_path.write_text(json.dumps(feature_model), encoding='utf-8')
+
+            result = run([PY, str(SCRIPT), str(model_path), '--output-dir', str(out_dir)])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            plan = json.loads((out_dir / 'implementation-plan.json').read_text())
+            validation = run([PY, str(VALIDATOR), str(out_dir / 'implementation-plan.json')])
+
+        self.assertEqual(plan['tasks'][0]['id'], 'TASK-001')
+        self.assertEqual(plan['tasks'][0]['dependencies'], ['TASK-002'])
+        self.assertEqual(plan['tasks'][1]['id'], 'TASK-002')
+        self.assertEqual(plan['tasks'][1]['wave'], 1)
+        self.assertEqual(plan['tasks'][0]['wave'], 2)
+        self.assertEqual([wave['task_ids'] for wave in plan['waves']], [['TASK-002'], ['TASK-001']])
+        self.assertEqual(validation.returncode, 0, validation.stderr + validation.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()

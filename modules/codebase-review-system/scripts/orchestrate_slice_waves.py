@@ -225,6 +225,28 @@ def remove_artifact(path: Path):
         path.unlink()
 
 
+def remove_worktree_artifact(path: Path):
+    top_result = run_cmd(['git', '-C', str(path), 'rev-parse', '--show-toplevel'])
+    if top_result.returncode or Path(top_result.stdout.strip()).resolve() != path.resolve():
+        remove_artifact(path)
+        return {'removed_by': 'filesystem'}
+    result = run_cmd(['git', '-C', str(path), 'worktree', 'remove', '--force', str(path)])
+    if result.returncode:
+        raise RuntimeError(result.stderr or result.stdout or f'git worktree remove failed for {path}')
+    return {
+        'removed_by': 'git worktree remove',
+        'stdout': result.stdout,
+        'stderr': result.stderr,
+    }
+
+
+def remove_cleanup_artifact(kind, path: Path):
+    if kind == 'worktree':
+        return remove_worktree_artifact(path)
+    remove_artifact(path)
+    return {'removed_by': 'filesystem'}
+
+
 def cleanup_artifacts(args):
     if args.cleanup_older_than_days < 0:
         print('--cleanup-older-than-days must be zero or greater', file=sys.stderr)
@@ -248,7 +270,7 @@ def cleanup_artifacts(args):
         if args.dry_run:
             print(f'[dry-run] remove {kind} {path}')
         else:
-            remove_artifact(path)
+            remove_cleanup_artifact(kind, path)
             print(f'removed {kind} {path}')
     return 0
 
@@ -915,7 +937,16 @@ def request_reviews(worktree, pr_number, slice_item, args):
         }
         for future in concurrent.futures.as_completed(futures):
             agent = futures[future]
-            records[agent] = future.result()
+            try:
+                records[agent] = future.result()
+            except Exception as exc:  # noqa: BLE001 - keep one failed reviewer from aborting the slice
+                records[agent] = {
+                    'agent': agent,
+                    'status': 'failed',
+                    'requested_at': None,
+                    'completed_at': None,
+                    'error': str(exc),
+                }
 
     completed_agents = [agent for agent in agents if records[agent].get('status') == 'completed']
     timed_out_agents = [agent for agent in agents if records[agent].get('status') == 'timed_out']
@@ -1123,10 +1154,17 @@ def repair_review_threads(slice_item, args, run_dir, plan_copy, state, attempt):
     )
     push_branch(worktree)
     resolved_threads = []
+    active_after_repair = active_review_threads(worktree, pr_number)
+    active_after_repair_ids = {thread.get('id') for thread in active_after_repair if thread.get('id')}
+    skipped_active_threads = []
     if getattr(args, 'resolve_review_threads', True):
         for thread in threads:
             thread_id = thread.get('id')
-            if thread_id:
+            if not thread_id:
+                continue
+            if thread_id in active_after_repair_ids:
+                skipped_active_threads.append(thread_id)
+            else:
                 resolved_threads.append(resolve_review_thread(worktree, thread_id))
         write_json(slice_dir / f'review-repair-{attempt}.resolved-threads.json', resolved_threads)
     review_requests = request_reviews(worktree, pr_number, slice_item, args) if args.allow_review_request else None
@@ -1139,6 +1177,8 @@ def repair_review_threads(slice_item, args, run_dir, plan_copy, state, attempt):
         'artifacts': moved_artifacts,
         'verification': verify,
         'threads_path': str(threads_path),
+        'active_thread_count_after_repair': len(active_after_repair),
+        'skipped_active_threads': skipped_active_threads,
         'resolved_threads': resolved_threads,
         'review_requests': review_requests,
     })

@@ -283,9 +283,25 @@ def completed_codex_review_comment_after(view, requested):
             continue
         author = comment_author_login(comment).lower()
         body = comment.get('body') or ''
-        if 'codex' in author and 'codex review:' in body.lower():
+        if is_codex_review_summary(author, body):
             return comment
     return None
+
+
+def is_codex_review_summary(author, body):
+    return 'codex' in str(author or '').lower() and 'codex review:' in str(body or '').lower()
+
+
+def strip_nonblocking_review_phrases(body):
+    text = str(body or '')
+    nonblocking = [
+        r'\bno\s+(?:p0|p1|critical|blocking|blocker|must[- ]?fix|changes requested)\s+(?:findings?|issues?|comments?)\b',
+        r'\b(?:p0|p1|critical|blocking|blocker|must[- ]?fix|changes requested)\s+(?:findings?|issues?)\s*:\s*(?:none|no|0|zero)\b',
+        r"\bdidn'?t find (?:any )?(?:major|blocking|critical) issues?\b",
+    ]
+    for pattern in nonblocking:
+        text = re.sub(pattern, '', text, flags=re.I)
+    return text
 
 
 def blocking_review_comments_after(view, requested):
@@ -295,9 +311,13 @@ def blocking_review_comments_after(view, requested):
         created = comment_created_at(comment)
         if not created or created < requested:
             continue
+        author = comment_author_login(comment)
         body = comment.get('body') or ''
+        if not is_codex_review_summary(author, body):
+            continue
+        body = strip_nonblocking_review_phrases(body)
         if pattern.search(body):
-            blocking.append(comment_author_login(comment) or 'unknown')
+            blocking.append(author or 'unknown')
     return blocking
 
 

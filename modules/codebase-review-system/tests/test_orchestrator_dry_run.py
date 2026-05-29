@@ -335,6 +335,32 @@ class TestOrchestrator(unittest.TestCase):
             self.assertTrue(old_run.exists())
             self.assertTrue(old_worktree.exists())
 
+    def test_cleanup_artifacts_removes_worktrees_through_git(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            worktrees = Path(td) / 'worktrees'
+            old_worktree = worktrees / 'codebase-review-old'
+            git(repo, 'worktree', 'add', '-b', 'codebase-review/old', str(old_worktree), 'HEAD')
+            old_time = time.time() - (60 * 60 * 24 * 40)
+            os.utime(old_worktree, (old_time, old_time))
+
+            result = run([
+                PY,
+                str(SCRIPT),
+                '--cleanup-artifacts',
+                '--confirm-cleanup',
+                '--runs-root',
+                str(Path(td) / 'runs'),
+                '--worktree-dir',
+                str(worktrees),
+                '--cleanup-older-than-days',
+                '30',
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertFalse(old_worktree.exists())
+            self.assertNotIn(str(old_worktree), git(repo, 'worktree', 'list', '--porcelain').stdout)
+
     def test_uses_first_working_codex_binary_from_path(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)
@@ -964,6 +990,91 @@ class TestOrchestrator(unittest.TestCase):
             self.assertEqual(result['timed_out_agents'], ['codex'])
             self.assertEqual(result['completed_agents'], [])
             self.assertIsNone(result['review_gate_required_at'])
+
+    def test_request_reviews_records_failed_agent_without_failing(self):
+        with tempfile.TemporaryDirectory() as td:
+            module = load_orchestrator_module()
+
+            def fake_run_cmd(cmd, cwd=None, timeout=None):
+                if cmd[:3] == ['gh', 'pr', 'comment']:
+                    return types.SimpleNamespace(returncode=0, stdout='', stderr='')
+                if cmd[:3] == ['gh', 'pr', 'edit']:
+                    return types.SimpleNamespace(returncode=1, stdout='', stderr='unsupported reviewer')
+                if cmd[:3] == ['gh', 'pr', 'view']:
+                    payload = {
+                        'latestReviews': [{
+                            'author': {'login': 'codex-reviewer'},
+                            'submittedAt': '2026-05-22T14:00:01Z',
+                            'state': 'COMMENTED',
+                        }],
+                        'comments': [],
+                    }
+                    return types.SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr='')
+                return types.SimpleNamespace(returncode=99, stdout='', stderr='unexpected')
+
+            module.run_cmd = fake_run_cmd
+            module.now_utc = lambda: '2026-05-22T14:00:00Z'
+            args = types.SimpleNamespace(
+                review_agents='codex,copilot',
+                review_agent_timeout_seconds=0,
+                review_agent_poll_seconds=0,
+            )
+
+            result = module.request_reviews(Path(td), 123, slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt'), args)
+
+            self.assertEqual(result['completed_agents'], ['codex'])
+            self.assertEqual(result['failed_agents'], ['copilot'])
+            self.assertEqual(result['agents']['copilot']['status'], 'failed')
+            self.assertIn('unsupported reviewer', result['agents']['copilot']['error'])
+            self.assertEqual(result['review_gate_required_at'], '2026-05-22T14:00:00Z')
+
+    def test_review_repair_resolves_only_threads_no_longer_active(self):
+        with tempfile.TemporaryDirectory() as td:
+            module = load_orchestrator_module()
+            run_dir = Path(td) / 'run'
+            worktree = Path(td) / 'worktree'
+            run_dir.mkdir()
+            worktree.mkdir()
+            thread_one = {'id': 'thread-one', 'path': 'src/a.txt'}
+            thread_two = {'id': 'thread-two', 'path': 'src/b.txt'}
+            active_thread_calls = [[thread_one, thread_two], [thread_two]]
+            resolved = []
+
+            module.active_review_threads = lambda *_args: active_thread_calls.pop(0)
+            module.codex_command = lambda *_args, **_kwargs: ['codex-fake']
+            module.run_cmd = lambda *_args, **_kwargs: types.SimpleNamespace(returncode=0, stdout='', stderr='')
+            module.move_legacy_slice_artifacts = lambda *_args: []
+            module.changed_files_in_scope = lambda *_args: ['src/a.txt']
+            module.verification_results = lambda *_args: []
+            module.fail_on_verification = lambda *_args: None
+            module.commit_slice = lambda *_args, **_kwargs: 'new-head'
+            module.push_branch = lambda *_args: None
+            module.resolve_review_thread = lambda _worktree, thread_id: resolved.append(thread_id) or {'thread_id': thread_id}
+            args = types.SimpleNamespace(resolve_review_threads=True, allow_review_request=False)
+            state = {
+                'slices': {
+                    'SLICE-001': {
+                        'worktree': str(worktree),
+                        'pr_number': 123,
+                        'head_sha': 'old-head',
+                    }
+                }
+            }
+
+            result = module.repair_review_threads(
+                slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt'),
+                args,
+                run_dir,
+                run_dir / 'slice-plan.json',
+                state,
+                1,
+            )
+
+            self.assertTrue(result)
+            self.assertEqual(resolved, ['thread-one'])
+            repair = state['slices']['SLICE-001']['review_repair_attempts'][0]
+            self.assertEqual(repair['active_thread_count_after_repair'], 1)
+            self.assertEqual(repair['skipped_active_threads'], ['thread-two'])
 
     def test_reused_worktree_must_be_clean(self):
         with tempfile.TemporaryDirectory() as td:

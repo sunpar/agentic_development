@@ -441,6 +441,45 @@ class TestMergeGate(unittest.TestCase):
             ], env=env)
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
+    def test_require_review_after_ignores_nonblocking_p1_mentions(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            view = {
+                'number': 123,
+                'state': 'OPEN',
+                'isDraft': False,
+                'mergeable': 'MERGEABLE',
+                'mergeStateStatus': 'CLEAN',
+                'reviewDecision': '',
+                'headRefOid': 'abc123',
+                'latestReviews': [],
+                'comments': [
+                    {
+                        'author': {'login': 'sunpar'},
+                        'body': '@codex review\n\nFocus: P1 issues and regressions',
+                        'createdAt': '2026-05-22T13:00:05Z',
+                    },
+                    {
+                        'author': {'login': 'chatgpt-codex-connector'},
+                        'body': "Codex Review: No P1 findings. Didn't find any major issues.",
+                        'createdAt': '2026-05-22T13:01:00Z',
+                    },
+                ],
+            }
+            _, env = setup_fake_environment(td, view=view)
+            result = run([
+                PY,
+                str(SCRIPT),
+                '--pr',
+                '123',
+                '--repo-path',
+                str(repo),
+                '--allow-merge',
+                '--require-review-after',
+                '2026-05-22T13:00:00Z',
+            ], env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
     def test_require_review_after_blocks_later_codex_must_fix_comment(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)

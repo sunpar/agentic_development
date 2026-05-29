@@ -146,6 +146,38 @@ def mark_parallel_conflicts(tasks):
                 right['parallel_conflicts'].append(left['id'])
 
 
+def tasks_in_dependency_order(tasks):
+    by_id = {task['id']: task for task in tasks}
+    ordered = []
+    visiting = set()
+    visited = set()
+
+    def visit(task):
+        task_id = task['id']
+        if task_id in visited:
+            return
+        if task_id in visiting:
+            raise ValueError(f'cyclic related_features dependency involving {task_id}')
+        visiting.add(task_id)
+        for dependency in task.get('dependencies', []):
+            if dependency in by_id:
+                visit(by_id[dependency])
+        visiting.remove(task_id)
+        visited.add(task_id)
+        ordered.append(task)
+
+    for task in tasks:
+        visit(task)
+    return ordered
+
+
+def assign_dependency_ordered_waves(tasks):
+    ordered = tasks_in_dependency_order(tasks)
+    for index, task in enumerate(ordered, 1):
+        task['wave'] = index
+    return ordered
+
+
 def build_plan(model, feature_id=None):
     features = selected_features(model, feature_id)
     epics = build_epics(features)
@@ -159,6 +191,7 @@ def build_plan(model, feature_id=None):
         for index, feature in enumerate(features, 1)
     ]
     mark_parallel_conflicts(tasks)
+    ordered_tasks = assign_dependency_ordered_waves(tasks)
     milestone = {
         'id': 'MILESTONE-001',
         'title': 'Feature implementation tasks',
@@ -179,7 +212,7 @@ def build_plan(model, feature_id=None):
             'post_wave_verification': task['verification_commands'],
             'post_wave_verification_commands': task['verification_commands'],
         }
-        for task in tasks
+        for task in ordered_tasks
     ]
     return {
         'source': 'feature_task_generator.py',
