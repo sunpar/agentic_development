@@ -1,20 +1,125 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "architecture": {
+      "additionalProperties": true,
+      "properties": {
+        "components": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
       "required": [
         "components"
       ],
       "type": "object"
     },
     "codebase_summary": {
+      "minLength": 1,
       "type": "string"
     },
     "evidence": {
+      "items": {
+        "type": "object"
+      },
+      "minItems": 1,
       "type": "array"
     },
     "features": {
       "items": {
+        "additionalProperties": true,
+        "properties": {
+          "category": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "code_paths": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "type": "string"
+          },
+          "data_models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "doc_code_mismatches": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "docs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "entry_points": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "pattern": "^[^\\s]+$",
+            "type": "string"
+          },
+          "intended_behavior": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "known_risks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "related_components": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "related_features": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "summary": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "tests": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "user_or_system_value": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
         "required": [
           "id",
           "name",
@@ -35,9 +140,49 @@
         ],
         "type": "object"
       },
+      "minItems": 1,
       "type": "array"
     },
     "repo": {
+      "additionalProperties": true,
+      "properties": {
+        "analyzed_at": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "ci_files": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "package_managers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "primary_languages": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "root": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "test_commands": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
       "required": [
         "name",
         "root",
@@ -50,6 +195,9 @@
       "type": "object"
     },
     "unknowns": {
+      "items": {
+        "type": "string"
+      },
       "type": "array"
     }
   },

@@ -62,7 +62,7 @@ def slice_item(sid, branch, path, deps=None):
         'why_this_slice_exists': 'test',
         'files_to_read': [path],
         'docs_to_read': [],
-        'tests_to_read': [],
+        'tests_to_read': [path],
         'files_allowed_to_edit': [path],
         'files_not_allowed_to_edit': [],
         'entry_points': [path],

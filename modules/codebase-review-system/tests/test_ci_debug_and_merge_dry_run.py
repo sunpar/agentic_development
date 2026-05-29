@@ -59,7 +59,7 @@ class TestCiMerge(unittest.TestCase):
                     'why_this_slice_exists': 'test',
                     'files_to_read': ['src/a.txt'],
                     'docs_to_read': [],
-                    'tests_to_read': [],
+                    'tests_to_read': ['tests/test_slice.py'],
                     'files_allowed_to_edit': ['src/a.txt'],
                     'files_not_allowed_to_edit': [],
                     'entry_points': ['src/a.txt'],

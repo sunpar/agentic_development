@@ -1,0 +1,10 @@
+{
+  "slices": [
+    {
+      "id": "SLICE-001",
+      "files_allowed_to_edit": [
+        "src/a.py"
+      ]
+    }
+  ]
+}

@@ -30,6 +30,42 @@ class TestSlicePlan(unittest.TestCase):
         data['waves'][0]['integration_order'] = ['SLICE-001', 'SLICE-002']
         self.assertInvalid(data, 'same-wave edit conflict')
 
+    def test_rejects_empty_context_and_test_plans(self):
+        data = json.loads((ROOT/'fixtures/sample_slice_plan.valid.json').read_text())
+        data['slices'][0]['files_to_read'] = []
+        data['slices'][0]['tests_to_read'] = []
+        data['slices'][0]['review_questions'] = []
+        data['slices'][0]['acceptance_criteria'] = []
+
+        self.assertInvalid(data, 'SLICE-001.files_to_read required')
+        self.assertInvalid(data, 'SLICE-001.tests_to_read required')
+        self.assertInvalid(data, 'SLICE-001.review_questions required')
+        self.assertInvalid(data, 'SLICE-001.acceptance_criteria required')
+
+    def test_schema_encodes_validator_constraints(self):
+        schema = json.loads((ROOT/'schemas/slice_plan.schema.json').read_text())
+        slice_schema = schema['properties']['slices']['items']
+        props = slice_schema['properties']
+        wave_schema = schema['properties']['waves']['items']
+
+        self.assertIn('waves', schema['required'])
+        self.assertEqual(schema['properties']['slices']['minItems'], 1)
+        self.assertEqual(props['id']['pattern'], r'^[^\s]+$')
+        self.assertEqual(props['slice_type']['enum'], [
+            'review-only',
+            'review-refactor',
+            'refactor-simplify',
+            'refactor-performance',
+            'refactor-api-coherence',
+            'refactor-dead-code',
+        ])
+        self.assertEqual(props['risk']['enum'], ['low', 'medium', 'high', 'critical'])
+        self.assertEqual(props['files_to_read']['minItems'], 1)
+        self.assertEqual(props['tests_to_read']['minItems'], 1)
+        self.assertEqual(props['verification_commands']['minItems'], 1)
+        self.assertEqual(props['expected_pr_size']['properties']['max_files_changed']['minimum'], 1)
+        self.assertEqual(wave_schema['properties']['slice_ids']['minItems'], 1)
+
     def test_generated_slice_plan_serializes_slices(self):
         feature_model = {
             'repo': {'test_commands': ['python3 -m unittest']},
