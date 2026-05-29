@@ -66,6 +66,7 @@ def pr_view(repo, pr):
         'headRefName',
         'baseRefName',
         'latestReviews',
+        'comments',
         'url',
     ])
     cmd = ['gh', 'pr', 'view']
@@ -196,6 +197,26 @@ def unresolved_must_fix_threads(threads):
     return matches
 
 
+def summarize_threads(threads, limit=5):
+    summaries = []
+    for thread in threads[:limit]:
+        comments = ((thread.get('comments') or {}).get('nodes') or [])
+        body = ''
+        author = 'unknown'
+        if comments:
+            comment = comments[-1]
+            author = (((comment.get('author') or {}).get('login')) or 'unknown')
+            body = (comment.get('body') or '').splitlines()[0].strip()
+        location = thread.get('path') or 'unknown path'
+        line = thread.get('line') or thread.get('startLine')
+        if line:
+            location = f'{location}:{line}'
+        summaries.append(f'{location} by {author}: {body[:180]}')
+    if len(threads) > limit:
+        summaries.append(f'... {len(threads) - limit} more')
+    return '; '.join(summaries)
+
+
 def validate_pr(view, expected_head_sha, final=True, allow_review_required=False):
     if str(view.get('state', '')).upper() != 'OPEN':
         raise RuntimeError(f'PR is not open: {view.get("state")}')
@@ -238,7 +259,46 @@ def require_review_after(view, requested_at):
             if state == 'CHANGES_REQUESTED':
                 raise RuntimeError('review submitted after request blocks merge: CHANGES_REQUESTED')
             return
+    comment = completed_codex_review_comment_after(view, requested)
+    if comment:
+        blocking = blocking_review_comments_after(view, requested)
+        if blocking:
+            raise RuntimeError('blocking review comments after requested review: ' + ', '.join(blocking))
+        return
     raise RuntimeError('no completed review submitted after requested review')
+
+
+def comment_created_at(comment):
+    return parse_github_time(comment.get('createdAt'))
+
+
+def comment_author_login(comment):
+    return str(((comment.get('author') or {}).get('login')) or '')
+
+
+def completed_codex_review_comment_after(view, requested):
+    for comment in view.get('comments') or []:
+        created = comment_created_at(comment)
+        if not created or created < requested:
+            continue
+        author = comment_author_login(comment).lower()
+        body = comment.get('body') or ''
+        if 'codex' in author and 'codex review:' in body.lower():
+            return comment
+    return None
+
+
+def blocking_review_comments_after(view, requested):
+    pattern = re.compile(r'\b(must[- ]?fix|p0|p1|critical|block(?:er|ing)?|changes requested)\b', re.I)
+    blocking = []
+    for comment in view.get('comments') or []:
+        created = comment_created_at(comment)
+        if not created or created < requested:
+            continue
+        body = comment.get('body') or ''
+        if pattern.search(body):
+            blocking.append(comment_author_login(comment) or 'unknown')
+    return blocking
 
 
 def wait_for_required_review(repo, pr, requested_at, timeout_seconds, poll_seconds, expected_head_sha):
@@ -278,8 +338,10 @@ def wait_for_review_threads_clear(repo, pr_number, timeout_seconds, poll_seconds
             return
         if timeout_seconds <= 0 or time.time() >= deadline:
             if unresolved:
-                raise RuntimeError(f'unresolved review threads: {len(unresolved)}')
-            raise RuntimeError(f'unresolved must-fix comments: {len(must_fix)}')
+                detail = summarize_threads(unresolved)
+                raise RuntimeError(f'unresolved review threads: {len(unresolved)}' + (f': {detail}' if detail else ''))
+            detail = summarize_threads(must_fix)
+            raise RuntimeError(f'unresolved must-fix comments: {len(must_fix)}' + (f': {detail}' if detail else ''))
         time.sleep(max(1, poll_seconds))
 
 
@@ -294,7 +356,8 @@ def parse_args():
     ap.add_argument('--expected-head-sha')
     ap.add_argument('--ci-timeout-seconds', type=int, default=1800)
     ap.add_argument('--ci-poll-seconds', type=int, default=15)
-    ap.add_argument('--review-timeout-seconds', type=int, default=0)
+    ap.add_argument('--review-timeout-seconds', type=int, default=600)
+    ap.add_argument('--review-thread-timeout-seconds', type=int, default=0)
     ap.add_argument('--require-review-after')
     ap.add_argument('--dry-run', action='store_true')
     return ap.parse_args()
@@ -320,7 +383,7 @@ def main():
                 args.ci_poll_seconds,
                 args.expected_head_sha,
             )
-        wait_for_review_threads_clear(repo, view.get('number') or args.pr, args.review_timeout_seconds, args.ci_poll_seconds)
+        wait_for_review_threads_clear(repo, view.get('number') or args.pr, args.review_thread_timeout_seconds, args.ci_poll_seconds)
 
         if args.no_merge:
             print('merge skipped: --no-merge/--pr-only provided')

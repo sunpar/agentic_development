@@ -4,14 +4,15 @@ The current codebase-intelligence module is a v0.1 scaffold. These items are int
 
 ## Feature Implementation Flow
 
-- Add `feature-task-generator` that emits epics, milestones, releases, PR-sized implementation tasks, task markdown files, tasks CSV, and waves.
-- Include TDD plans, context bundles, allowed edit scopes, dependencies, parallel conflicts, verification commands, and acceptance criteria.
-- Separate feature implementation tasks from codebase review/refactor slices.
+- Implemented in `feature_task_generator.py`: emits epics, milestones, releases, PR-sized implementation tasks, task Markdown files, tasks CSV, and waves from a feature model.
+- Generated tasks include TDD plans, context bundles, write scopes, dependencies, parallel conflicts, verification commands, and acceptance criteria.
+- Feature implementation tasks are separate from codebase review/refactor slices.
+- Remaining follow-up: add an implementation-wave executor that consumes generated task plans directly.
 
 ## Real Wave Orchestration
 
-- Implemented in `orchestrate_slice_waves.py`: resumable state, per-slice worktrees, `--max-parallel`, wave failure blocking, ordered merge gates, and external run state under `~/.codex/runs/codebase-review/`.
-- Remaining follow-up: richer post-wave summary reports and cleanup commands for old worktrees/run directories.
+- Implemented in `orchestrate_slice_waves.py`: resumable state, per-slice worktrees, `--max-parallel`, wave failure blocking, ordered merge gates, external run state under `~/.codex/runs/codebase-review/`, post-wave `run-summary.json` and `run-summary.md`, and safe cleanup listing/removal for old run directories and worktrees.
+- Remaining follow-up: add aggregate reporting across multiple historical runs.
 
 ## PR Review And CI Loop
 
@@ -20,18 +21,13 @@ The current codebase-intelligence module is a v0.1 scaffold. These items are int
 
 ## Hooks
 
-- Expand strict hook behavior with tests and documented inputs.
-- Make scope guard read slice state when available.
-- Make slop guard diff-aware by default.
-- Make stop-summary guard compatible with Codex hook payload shape.
+- Implemented with tests and documented inputs: strict hook behavior, slice-state scope fallback, diff-aware slop scanning by default, and Codex transcript payload support for stop summaries.
+- Remaining follow-up: add fixture examples for each installed hook payload and keep hook behavior aligned with future Codex hook schema changes.
 
 ## Schemas And Validators
 
-- Tighten schema properties, enums, ID patterns, branch-name patterns, and typed arrays.
-- Add dependency cycle detection.
-- Validate wave references against task IDs.
-- Validate same-wave write-set conflicts.
-- Validate expected PR size and nonempty context/test plans.
+- Implemented in `validate_slice_plan.py`: required fields, list-shaped fields, unsafe path checks, slice type and risk enums, branch safety, positive expected PR size fields, dependency cycle detection, unknown dependency and parallel-conflict references, wave membership, dependency wave ordering, same-wave edit conflicts, and declared same-wave parallel conflicts.
+- Remaining follow-up: tighten JSON Schema files to match validator behavior, add stricter ID and branch-name patterns, and validate nonempty context/test plans beyond the current `files_allowed_to_edit` and `verification_commands` checks.
 
 ## Skill Depth
 

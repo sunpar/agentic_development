@@ -147,16 +147,20 @@ python3 ~/.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py docs
 Run validated waves with external run state and no merge:
 
 ```bash
-python3 ~/.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py docs/agentic-system/review/slice-plan.json docs/agentic-system/review/slice-plan.json --setup-command 'make install' --max-parallel 999 --allow-pr --allow-review-request --no-merge
+python3 ~/.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py docs/agentic-system/review/slice-plan.json docs/agentic-system/review/slice-plan.json --setup-command 'make install' --max-parallel 999 --allow-pr --allow-review-request --review-agents codex,copilot --review-agent-timeout-seconds 600 --no-merge
 ```
 
 Run with explicit opt-in merge gates:
 
 ```bash
-python3 ~/.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py docs/agentic-system/review/slice-plan.json docs/agentic-system/review/slice-plan.json --setup-command 'make install' --max-parallel 999 --allow-pr --allow-review-request --allow-merge --merge-method squash
+python3 ~/.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py docs/agentic-system/review/slice-plan.json docs/agentic-system/review/slice-plan.json --setup-command 'make install' --max-parallel 999 --allow-pr --allow-review-request --review-agents codex,copilot --review-agent-timeout-seconds 600 --allow-merge --merge-method squash
 ```
 
 Use `--setup-command` for repo-specific dependency setup that each slice worktree needs before Codex and verification. The flag is repeatable.
+
+With `--allow-review-request`, Codex and Copilot reviews are requested in parallel by default. Each requested agent is polled independently until it responds or `--review-agent-timeout-seconds` elapses; the default is 600 seconds. The merge-gate wait for submitted review activity also defaults to 600 seconds.
+
+With `--allow-review-request` and `--allow-merge`, active review threads trigger bounded automatic repair before merge. Review-thread blockers fail fast by default with `--review-thread-timeout-seconds 0`, so the repair loop can run instead of waiting on unresolved threads. The default is `--review-repair-attempts 2`: Codex receives the active thread JSON plus the original slice scope, applies only valid in-scope fixes, verification runs again, the branch is pushed, addressed thread IDs are resolved, fresh Codex and Copilot reviews are requested in parallel, and the merge gate is retried.
 
 ## PR Review Comment Follow-Up
 

@@ -21,6 +21,8 @@ Use after PR creation when requesting Codex or Copilot review.
 - Read repository instructions such as AGENTS.md first.
 - Prefer Superpowers workflows when installed and relevant.
 - Prefer OpenAI curated GitHub skills for PR comments and CI when available.
+- For orchestrated slice PRs, request Codex and Copilot reviews in parallel unless the user narrows the agent set.
+- Wait independently for each requested agent until review activity appears or the configured timeout elapses; the standard timeout is 10 minutes per agent.
 - Stay within the requested scope.
 - Record evidence, assumptions, unknowns, and verification commands.
 - Do not perform mutating actions unless this skill's role explicitly requires mutation.

@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -56,6 +57,92 @@ def load_json(path):
 def write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+
+
+def status_counts(items):
+    counts = {}
+    for item in items:
+        status = str(item.get('status') or 'unknown')
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def sorted_state_items(mapping):
+    return [
+        (key, value)
+        for key, value in sorted(
+            (mapping or {}).items(),
+            key=lambda item: str(item[0]),
+        )
+        if isinstance(value, dict)
+    ]
+
+
+def run_summary(state):
+    waves = [
+        {
+            'wave': wave_id,
+            'status': wave.get('status'),
+            'slice_ids': wave.get('slice_ids', []),
+            'started_at': wave.get('started_at'),
+            'completed_at': wave.get('completed_at'),
+        }
+        for wave_id, wave in sorted_state_items(state.get('waves'))
+    ]
+    slices = [
+        {
+            'id': slice_id,
+            'status': item.get('status'),
+            'branch': item.get('branch'),
+            'pr_number': item.get('pr_number'),
+            'head_sha': item.get('head_sha'),
+            'error': item.get('error'),
+        }
+        for slice_id, item in sorted_state_items(state.get('slices'))
+    ]
+    return {
+        'generated_at': now_utc(),
+        'repo': state.get('repo'),
+        'run_dir': state.get('run_dir'),
+        'totals': {
+            'waves': len(waves),
+            'slices': len(slices),
+            'by_status': status_counts(slices),
+        },
+        'waves': waves,
+        'slices': slices,
+    }
+
+
+def write_run_summary(run_dir: Path, state) -> dict:
+    summary = run_summary(state)
+    write_json(run_dir / 'run-summary.json', summary)
+    lines = [
+        '# Codebase Review Run Summary',
+        '',
+        f'Repo: {summary.get("repo") or ""}',
+        f'Run dir: {summary.get("run_dir") or str(run_dir)}',
+        '',
+        '## Totals',
+        '',
+        f'- Waves: {summary["totals"]["waves"]}',
+        f'- Slices: {summary["totals"]["slices"]}',
+    ]
+    for status, count in sorted(summary['totals']['by_status'].items()):
+        lines.append(f'- {status}: {count}')
+    lines += ['', '## Waves', '']
+    for wave in summary['waves']:
+        lines.append(f'- Wave {wave["wave"]}: {wave.get("status") or "unknown"} ({", ".join(wave.get("slice_ids") or [])})')
+    lines += ['', '## Slices', '']
+    for item in summary['slices']:
+        detail = f'- {item["id"]}: {item.get("status") or "unknown"}'
+        if item.get('pr_number'):
+            detail += f' PR #{item["pr_number"]}'
+        if item.get('error'):
+            detail += f' error={item["error"]}'
+        lines.append(detail)
+    (run_dir / 'run-summary.md').write_text('\n'.join(lines).rstrip() + '\n', encoding='utf-8')
+    return summary
 
 
 def run_cmd(cmd, cwd=None, timeout=None):
@@ -103,6 +190,67 @@ def load_waves(path):
             raise SystemExit('waves must be a list')
         return waves
     raise SystemExit('waves file must be a JSON object with waves or a JSON list')
+
+
+def cleanup_cutoff(older_than_days):
+    return time.time() - (older_than_days * 24 * 60 * 60)
+
+
+def cleanup_candidates(root: Path, older_than_days: int, require_run_state=False):
+    root = root.expanduser()
+    if not root.exists():
+        return []
+    cutoff = cleanup_cutoff(older_than_days)
+    candidates = []
+    for child in sorted(root.iterdir(), key=lambda p: str(p)):
+        if not child.exists() or not child.is_dir():
+            continue
+        if require_run_state and not (child / 'run-state.json').exists():
+            continue
+        try:
+            mtime = child.stat().st_mtime
+        except OSError:
+            continue
+        if mtime <= cutoff:
+            candidates.append(child)
+    return candidates
+
+
+def remove_artifact(path: Path):
+    if path.is_symlink():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def cleanup_artifacts(args):
+    if args.cleanup_older_than_days < 0:
+        print('--cleanup-older-than-days must be zero or greater', file=sys.stderr)
+        return 2
+    runs_root = Path(args.runs_root).expanduser()
+    worktree_dir = Path(args.worktree_dir).expanduser()
+    candidates = [
+        ('run_dir', path)
+        for path in cleanup_candidates(runs_root, args.cleanup_older_than_days, require_run_state=True)
+    ] + [
+        ('worktree', path)
+        for path in cleanup_candidates(worktree_dir, args.cleanup_older_than_days, require_run_state=False)
+    ]
+    if not candidates:
+        print('no cleanup artifacts matched')
+        return 0
+    if not args.dry_run and not args.confirm_cleanup:
+        print('refusing to remove artifacts without --confirm-cleanup or --dry-run', file=sys.stderr)
+        return 2
+    for kind, path in candidates:
+        if args.dry_run:
+            print(f'[dry-run] remove {kind} {path}')
+        else:
+            remove_artifact(path)
+            print(f'removed {kind} {path}')
+    return 0
 
 
 def safe_extra_args(value):
@@ -526,14 +674,14 @@ def fail_on_verification(results):
     return next((r for r in results if r['returncode'] != 0), None)
 
 
-def commit_slice(worktree, slice_item, files):
+def commit_slice(worktree, slice_item, files, message=None):
     diff_check = run_cmd(['git', 'diff', '--check'], cwd=worktree)
     if diff_check.returncode:
         raise RuntimeError(diff_check.stderr or diff_check.stdout or 'git diff --check failed')
     add = run_cmd(['git', 'add', '--'] + files, cwd=worktree)
     if add.returncode:
         raise RuntimeError(add.stderr or add.stdout or 'git add failed')
-    commit = run_cmd(['git', 'commit', '-m', f'{slice_item["id"]}: review/refactor slice'], cwd=worktree)
+    commit = run_cmd(['git', 'commit', '-m', message or f'{slice_item["id"]}: review/refactor slice'], cwd=worktree)
     if commit.returncode:
         raise RuntimeError(commit.stderr or commit.stdout or 'git commit failed')
     head = run_cmd(['git', 'rev-parse', 'HEAD'], cwd=worktree)
@@ -550,6 +698,24 @@ def gh_json(cmd, cwd):
         return json.loads(result.stdout or '{}')
     except json.JSONDecodeError:
         return None
+
+
+def gh_json_required(cmd, cwd):
+    result = run_cmd(cmd, cwd=cwd)
+    if result.returncode:
+        raise RuntimeError(result.stderr or result.stdout or 'gh command failed: ' + ' '.join(cmd))
+    try:
+        return json.loads(result.stdout or '{}')
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f'invalid JSON from {" ".join(cmd)}: {exc}') from exc
+
+
+def repo_owner_name(cwd):
+    data = gh_json_required(['gh', 'repo', 'view', '--json', 'nameWithOwner'], cwd=cwd)
+    value = data.get('nameWithOwner') or ''
+    if '/' not in value:
+        raise RuntimeError('could not resolve GitHub owner/repo')
+    return value.split('/', 1)
 
 
 def pr_marker(slice_id):
@@ -591,13 +757,273 @@ def create_or_reuse_pr(worktree, slice_item, pr_base_branch):
 
 
 def request_review(worktree, pr_number, slice_item):
+    return request_agent_review(worktree, pr_number, slice_item, 'codex')['requested_at']
+
+
+def parse_review_agents(value):
+    if isinstance(value, (list, tuple)):
+        raw = value
+    else:
+        raw = str(value or 'codex,copilot').split(',')
+    agents = []
+    for item in raw:
+        agent = str(item).strip().lower()
+        if not agent:
+            continue
+        if agent not in {'codex', 'copilot'}:
+            raise RuntimeError(f'unsupported review agent: {agent}')
+        if agent not in agents:
+            agents.append(agent)
+    if not agents:
+        raise RuntimeError('--review-agents must include at least one agent')
+    return agents
+
+
+def request_agent_review(worktree, pr_number, slice_item, agent):
     focus = ', '.join(slice_item.get('review_focus', [])) or 'correctness, tests, API compatibility, slice scope'
-    body = f'@codex review\n\nSlice: {slice_item["id"]}\nFocus: {focus}'
     requested_at = now_utc()
-    result = run_cmd(['gh', 'pr', 'comment', str(pr_number), '--body', body], cwd=worktree)
+    if agent == 'codex':
+        body = f'@codex review\n\nSlice: {slice_item["id"]}\nFocus: {focus}'
+        cmd = ['gh', 'pr', 'comment', str(pr_number), '--body', body]
+    elif agent == 'copilot':
+        cmd = ['gh', 'pr', 'edit', str(pr_number), '--add-reviewer', '@copilot']
+    else:
+        raise RuntimeError(f'unsupported review agent: {agent}')
+    result = run_cmd(cmd, cwd=worktree)
+    record = {
+        'agent': agent,
+        'requested_at': requested_at,
+        'request_command': cmd,
+        'request_returncode': result.returncode,
+        'request_stdout': result.stdout,
+        'request_stderr': result.stderr,
+    }
     if result.returncode:
-        raise RuntimeError(result.stderr or result.stdout or 'gh pr comment failed')
-    return requested_at
+        raise RuntimeError(result.stderr or result.stdout or f'{agent} review request failed')
+    return record
+
+
+def parse_github_time(value):
+    if not value:
+        return None
+    try:
+        return _dt.datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+
+
+def author_login(item):
+    author = item.get('author') or {}
+    if isinstance(author, dict):
+        return str(author.get('login') or '')
+    return str(author)
+
+
+def review_author_matches(agent, login):
+    login = str(login or '').lower()
+    if agent == 'codex':
+        return 'codex' in login
+    if agent == 'copilot':
+        return 'copilot' in login
+    return False
+
+
+def completed_agent_review_after(view, agent, requested_at):
+    requested = parse_github_time(requested_at)
+    if not requested:
+        return None
+    for review in view.get('latestReviews') or []:
+        state = str(review.get('state') or '').upper()
+        if state in {'PENDING', 'DISMISSED'}:
+            continue
+        submitted = parse_github_time(review.get('submittedAt'))
+        if submitted and submitted >= requested and review_author_matches(agent, author_login(review)):
+            return {
+                'source': 'latestReviews',
+                'completed_at': review.get('submittedAt'),
+                'state': state,
+                'author': author_login(review),
+            }
+    for comment in view.get('comments') or []:
+        created = parse_github_time(comment.get('createdAt'))
+        if not created or created < requested:
+            continue
+        author = author_login(comment)
+        body = comment.get('body') or ''
+        if agent == 'codex':
+            if review_author_matches(agent, author) and 'codex review:' in body.lower():
+                return {
+                    'source': 'comments',
+                    'completed_at': comment.get('createdAt'),
+                    'state': 'COMMENTED',
+                    'author': author,
+                }
+        elif agent == 'copilot' and review_author_matches(agent, author):
+            return {
+                'source': 'comments',
+                'completed_at': comment.get('createdAt'),
+                'state': 'COMMENTED',
+                'author': author,
+            }
+    return None
+
+
+def pr_review_activity(worktree, pr_number):
+    return gh_json_required(['gh', 'pr', 'view', str(pr_number), '--json', 'latestReviews,comments'], cwd=worktree)
+
+
+def wait_for_agent_review(worktree, pr_number, agent, requested_at, timeout_seconds, poll_seconds):
+    deadline = time.time() + timeout_seconds if timeout_seconds > 0 else time.time()
+    while True:
+        completed = completed_agent_review_after(pr_review_activity(worktree, pr_number), agent, requested_at)
+        if completed:
+            return completed
+        if timeout_seconds <= 0 or time.time() >= deadline:
+            return None
+        time.sleep(max(1, poll_seconds))
+
+
+def request_and_wait_for_agent_review(worktree, pr_number, slice_item, agent, timeout_seconds, poll_seconds):
+    record = request_agent_review(worktree, pr_number, slice_item, agent)
+    completed = wait_for_agent_review(worktree, pr_number, agent, record['requested_at'], timeout_seconds, poll_seconds)
+    if completed:
+        record.update(completed)
+        record['status'] = 'completed'
+    else:
+        record['status'] = 'timed_out'
+        record['completed_at'] = None
+    return record
+
+
+def request_reviews(worktree, pr_number, slice_item, args):
+    agents = parse_review_agents(getattr(args, 'review_agents', 'codex,copilot'))
+    timeout_seconds = getattr(args, 'review_agent_timeout_seconds', 600)
+    poll_seconds = getattr(args, 'review_agent_poll_seconds', 15)
+    records = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(agents)) as executor:
+        futures = {
+            executor.submit(
+                request_and_wait_for_agent_review,
+                worktree,
+                pr_number,
+                slice_item,
+                agent,
+                timeout_seconds,
+                poll_seconds,
+            ): agent
+            for agent in agents
+        }
+        for future in concurrent.futures.as_completed(futures):
+            agent = futures[future]
+            records[agent] = future.result()
+
+    completed_agents = [agent for agent in agents if records[agent].get('status') == 'completed']
+    timed_out_agents = [agent for agent in agents if records[agent].get('status') == 'timed_out']
+    failed_agents = [agent for agent in agents if records[agent].get('status') == 'failed']
+    requested_times = [records[agent].get('requested_at') for agent in agents if records[agent].get('requested_at')]
+    requested_at = min(requested_times) if requested_times else None
+    return {
+        'requested_at': requested_at,
+        'agents': {agent: records[agent] for agent in agents},
+        'completed_agents': completed_agents,
+        'timed_out_agents': timed_out_agents,
+        'failed_agents': failed_agents,
+        'review_gate_required_at': requested_at if completed_agents else None,
+    }
+
+
+def active_review_threads(worktree, pr_number):
+    owner, name = repo_owner_name(worktree)
+    query = '''
+query($owner:String!, $name:String!, $number:Int!, $after:String) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      reviewThreads(first:100, after:$after) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          startLine
+          comments(first:20) {
+            nodes {
+              body
+              createdAt
+              url
+              author { login }
+            }
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}
+'''
+    threads = []
+    after = ''
+    while True:
+        cmd = [
+            'gh', 'api', 'graphql',
+            '-f', f'owner={owner}',
+            '-f', f'name={name}',
+            '-F', f'number={int(pr_number)}',
+            '-f', 'query=' + query,
+        ]
+        if after:
+            cmd += ['-f', f'after={after}']
+        data = gh_json_required(cmd, cwd=worktree)
+        page = (((data.get('data') or {}).get('repository') or {}).get('pullRequest') or {}).get('reviewThreads', {})
+        threads.extend(page.get('nodes') or [])
+        page_info = page.get('pageInfo') or {}
+        if not page_info.get('hasNextPage'):
+            break
+        after = page_info.get('endCursor') or ''
+        if not after:
+            raise RuntimeError('review thread pagination missing endCursor')
+    return [thread for thread in threads if thread.get('isResolved') is False and not thread.get('isOutdated')]
+
+
+def review_repair_prompt(slice_item, plan_copy, artifact_dir, threads_path):
+    return '\n'.join([
+        f'Use slice-review-workflow and slice-refactor-workflow to address active PR review threads for {slice_item["id"]}.',
+        f'Slice ID: {slice_item["id"]}',
+        f'Slice plan copy: {plan_copy}',
+        f'Active review threads JSON: {threads_path}',
+        f'Write repair notes/artifacts under this external artifact directory, not inside the target repo: {artifact_dir}',
+        f'Allowed edit scope: {slice_item.get("files_allowed_to_edit", [])}',
+        f'Files not allowed to edit: {slice_item.get("files_not_allowed_to_edit", [])}',
+        f'Verification commands: {slice_item.get("verification_commands", [])}',
+        'Verify every thread against the current code.',
+        'Apply only valid in-scope fixes that preserve intended behavior.',
+        'If a thread is invalid or out of scope, write evidence in the external artifact directory and do not broaden scope.',
+        'Do not create, update, or merge PRs; the orchestrator owns PR, review request, thread resolution, and merge steps.',
+    ])
+
+
+def resolve_review_thread(worktree, thread_id):
+    mutation = '''
+mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    thread { id isResolved }
+  }
+}
+'''
+    result = run_cmd([
+        'gh', 'api', 'graphql',
+        '-f', 'query=' + mutation,
+        '-f', f'threadId={thread_id}',
+    ], cwd=worktree)
+    return {
+        'thread_id': thread_id,
+        'returncode': result.returncode,
+        'stdout': result.stdout,
+        'stderr': result.stderr,
+    }
 
 
 def push_branch(worktree):
@@ -630,6 +1056,104 @@ def move_legacy_slice_artifacts(worktree, slice_id, slice_dir):
         except OSError:
             pass
     return moved
+
+
+def repair_review_threads(slice_item, args, run_dir, plan_copy, state, attempt):
+    sid = slice_item['id']
+    result = state['slices'].get(sid, {})
+    worktree = Path(result['worktree'])
+    pr_number = result['pr_number']
+    slice_dir = run_dir / 'slices' / sid
+    threads = active_review_threads(worktree, pr_number)
+    repair_record = {
+        'attempt': attempt,
+        'started_at': now_utc(),
+        'pr_number': pr_number,
+        'base_head_sha': result.get('head_sha'),
+        'active_thread_count': len(threads),
+    }
+    if not threads:
+        repair_record['status'] = 'no_active_threads'
+        result.setdefault('review_repair_attempts', []).append(repair_record)
+        state['slices'][sid] = result
+        write_json(run_dir / 'run-state.json', state)
+        return False
+
+    threads_path = slice_dir / f'review-threads-attempt-{attempt}.json'
+    write_json(threads_path, {'threads': threads})
+    prompt = review_repair_prompt(slice_item, plan_copy, slice_dir, threads_path)
+    cmd = codex_command(args, prompt, writable_dirs=[run_dir])
+    codex = run_cmd(cmd, cwd=worktree)
+    (slice_dir / f'review-repair-{attempt}.stdout.log').write_text(codex.stdout, encoding='utf-8')
+    (slice_dir / f'review-repair-{attempt}.stderr.log').write_text(codex.stderr, encoding='utf-8')
+    if codex.returncode:
+        raise RuntimeError(f'{sid} review repair attempt {attempt} codex exited {codex.returncode}')
+
+    moved_artifacts = move_legacy_slice_artifacts(worktree, sid, slice_dir)
+    changed_files_in_scope(worktree, slice_item.get('files_allowed_to_edit', []))
+    verify = verification_results(slice_item.get('verification_commands', []), worktree)
+    write_json(slice_dir / f'review-repair-{attempt}.verification.json', verify)
+    failed = fail_on_verification(verify)
+    if failed:
+        raise RuntimeError(f'{sid} review repair attempt {attempt} verification failed: {failed["command"]}')
+    moved_artifacts += move_legacy_slice_artifacts(worktree, sid, slice_dir)
+    files = changed_files_in_scope(worktree, slice_item.get('files_allowed_to_edit', []))
+
+    if not files:
+        remaining = active_review_threads(worktree, pr_number)
+        repair_record.update({
+            'status': 'no_changes',
+            'completed_at': now_utc(),
+            'remaining_thread_count': len(remaining),
+            'artifacts': moved_artifacts,
+            'verification': verify,
+        })
+        result.setdefault('review_repair_attempts', []).append(repair_record)
+        state['slices'][sid] = result
+        write_json(run_dir / 'run-state.json', state)
+        if remaining:
+            raise RuntimeError(f'{sid} review repair attempt {attempt} produced no changes with {len(remaining)} active threads remaining')
+        return True
+
+    head_sha = commit_slice(
+        worktree,
+        slice_item,
+        files,
+        message=f'{sid}: address review feedback',
+    )
+    push_branch(worktree)
+    resolved_threads = []
+    if getattr(args, 'resolve_review_threads', True):
+        for thread in threads:
+            thread_id = thread.get('id')
+            if thread_id:
+                resolved_threads.append(resolve_review_thread(worktree, thread_id))
+        write_json(slice_dir / f'review-repair-{attempt}.resolved-threads.json', resolved_threads)
+    review_requests = request_reviews(worktree, pr_number, slice_item, args) if args.allow_review_request else None
+
+    repair_record.update({
+        'status': 'pushed',
+        'completed_at': now_utc(),
+        'head_sha': head_sha,
+        'changed_files': files,
+        'artifacts': moved_artifacts,
+        'verification': verify,
+        'threads_path': str(threads_path),
+        'resolved_threads': resolved_threads,
+        'review_requests': review_requests,
+    })
+    result.setdefault('review_repair_attempts', []).append(repair_record)
+    result['status'] = 'pr_ready'
+    result['head_sha'] = head_sha
+    result['changed_files'] = files
+    if review_requests:
+        result['review_requested_at'] = review_requests.get('requested_at')
+        result['review_requests'] = review_requests
+        if review_requests.get('review_gate_required_at'):
+            result['review_gate_required_at'] = review_requests['review_gate_required_at']
+    state['slices'][sid] = result
+    write_json(run_dir / 'run-state.json', state)
+    return True
 
 
 def run_slice(slice_item, args, repo, worktree_dir, base_ref, run_dir, plan_copy, state, state_lock, pr_base_branch):
@@ -696,7 +1220,7 @@ def run_slice(slice_item, args, repo, worktree_dir, base_ref, run_dir, plan_copy
         moved_artifacts += move_legacy_slice_artifacts(worktree, sid, slice_dir)
         files = changed_files_in_scope(worktree, slice_item.get('files_allowed_to_edit', []))
 
-        review_requested_at = None
+        review_requests = None
         if not files:
             status = 'no_changes'
             head_sha = base_sha
@@ -707,7 +1231,7 @@ def run_slice(slice_item, args, repo, worktree_dir, base_ref, run_dir, plan_copy
                 push_branch(worktree)
                 pr_number = create_or_reuse_pr(worktree, slice_item, pr_base_branch)
                 if args.allow_review_request:
-                    review_requested_at = request_review(worktree, pr_number, slice_item)
+                    review_requests = request_reviews(worktree, pr_number, slice_item, args)
                 status = 'pr_ready'
             else:
                 head = run_cmd(['git', 'rev-parse', 'HEAD'], cwd=worktree)
@@ -731,8 +1255,11 @@ def run_slice(slice_item, args, repo, worktree_dir, base_ref, run_dir, plan_copy
             'resumed_from_dirty_worktree': resumed_dirty,
             'reused_stale_worktree_reset': reset_info,
         }
-        if review_requested_at:
-            result['review_requested_at'] = review_requested_at
+        if review_requests:
+            result['review_requested_at'] = review_requests.get('requested_at')
+            result['review_requests'] = review_requests
+            if review_requests.get('review_gate_required_at'):
+                result['review_gate_required_at'] = review_requests['review_gate_required_at']
         with state_lock:
             state['slices'][sid] = result
             write_json(run_dir / 'run-state.json', state)
@@ -757,35 +1284,57 @@ def merge_slice(slice_item, args, run_dir, state):
     pr_number = result.get('pr_number')
     if not pr_number:
         raise RuntimeError(f'{sid} has no PR to merge')
-    if args.allow_review_request and not result.get('review_requested_at'):
+    has_review_request_state = bool(result.get('review_requested_at') or result.get('review_requests'))
+    if args.allow_review_request and not has_review_request_state:
         raise RuntimeError(f'{sid} review request timestamp missing; refusing to auto-merge after review request mode')
-    cmd = [
-        sys.executable,
-        str(SCRIPT_DIR / 'merge_gate.py'),
-        '--pr', str(pr_number),
-        '--repo-path', result['worktree'],
-        '--allow-merge',
-        '--merge-method', args.merge_method,
-        '--expected-head-sha', result.get('head_sha', ''),
-        '--ci-timeout-seconds', str(args.ci_timeout_seconds),
-        '--ci-poll-seconds', str(args.ci_poll_seconds),
-        '--review-timeout-seconds', str(args.review_timeout_seconds),
-    ]
-    if args.allow_review_request:
-        cmd += ['--require-review-after', result['review_requested_at']]
-    if args.delete_branch:
-        cmd.append('--delete-branch')
-    merge = run_cmd(cmd)
     slice_dir = run_dir / 'slices' / sid
-    (slice_dir / 'merge.stdout.log').write_text(merge.stdout, encoding='utf-8')
-    (slice_dir / 'merge.stderr.log').write_text(merge.stderr, encoding='utf-8')
-    if merge.returncode:
-        raise RuntimeError(f'merge gate failed for {sid}: {merge.stderr or merge.stdout}')
-    result['status'] = 'merged'
-    result['merged_at'] = now_utc()
-    state['slices'][sid] = result
-    write_json(run_dir / 'run-state.json', state)
-    return True
+    max_repairs = getattr(args, 'review_repair_attempts', 0)
+    for attempt in range(max_repairs + 1):
+        result = state['slices'].get(sid, result)
+        cmd = [
+            sys.executable,
+            str(SCRIPT_DIR / 'merge_gate.py'),
+            '--pr', str(pr_number),
+            '--repo-path', result['worktree'],
+            '--allow-merge',
+            '--merge-method', args.merge_method,
+            '--expected-head-sha', result.get('head_sha', ''),
+            '--ci-timeout-seconds', str(args.ci_timeout_seconds),
+            '--ci-poll-seconds', str(args.ci_poll_seconds),
+            '--review-timeout-seconds', str(args.review_timeout_seconds),
+            '--review-thread-timeout-seconds', str(getattr(args, 'review_thread_timeout_seconds', 0)),
+        ]
+        review_gate_required_at = result.get('review_gate_required_at')
+        if review_gate_required_at is None and not result.get('review_requests'):
+            review_gate_required_at = result.get('review_requested_at')
+        if args.allow_review_request and review_gate_required_at:
+            cmd += ['--require-review-after', review_gate_required_at]
+        if args.delete_branch:
+            cmd.append('--delete-branch')
+        merge = run_cmd(cmd)
+        suffix = '' if attempt == 0 else f'.attempt-{attempt + 1}'
+        (slice_dir / f'merge{suffix}.stdout.log').write_text(merge.stdout, encoding='utf-8')
+        (slice_dir / f'merge{suffix}.stderr.log').write_text(merge.stderr, encoding='utf-8')
+        if merge.returncode == 0:
+            result['status'] = 'merged'
+            result['merged_at'] = now_utc()
+            state['slices'][sid] = result
+            write_json(run_dir / 'run-state.json', state)
+            return True
+
+        output = merge.stderr or merge.stdout
+        if not is_review_thread_gate_failure(output) or attempt >= max_repairs:
+            raise RuntimeError(f'merge gate failed for {sid}: {output}')
+        if not args.allow_review_request:
+            raise RuntimeError(f'merge gate failed for {sid}: review repair requires --allow-review-request: {output}')
+        print(f'{sid}: merge gate found unresolved review threads; running repair attempt {attempt + 1}/{max_repairs}')
+        repair_review_threads(slice_item, args, run_dir, run_dir / 'slice-plan.json', state, attempt + 1)
+    raise RuntimeError(f'merge gate failed for {sid}: review repair attempts exhausted')
+
+
+def is_review_thread_gate_failure(output):
+    text = (output or '').lower()
+    return 'unresolved review threads' in text or 'unresolved must-fix comments' in text
 
 
 def resolve_pr_base_branch(base_ref_arg, default_branch_name, repo):
@@ -814,8 +1363,8 @@ def print_dry_run(args, waves, merge_mode):
 
 def parse_args():
     ap = argparse.ArgumentParser(description='Orchestrate slice waves.')
-    ap.add_argument('slice_plan')
-    ap.add_argument('waves')
+    ap.add_argument('slice_plan', nargs='?')
+    ap.add_argument('waves', nargs='?')
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--max-parallel', type=int, default=1)
     ap.add_argument('--codex-profile')
@@ -837,12 +1386,28 @@ def parse_args():
     ap.add_argument('--delete-branch', action='store_true')
     ap.add_argument('--ci-timeout-seconds', type=int, default=1800)
     ap.add_argument('--ci-poll-seconds', type=int, default=15)
-    ap.add_argument('--review-timeout-seconds', type=int, default=1800)
+    ap.add_argument('--review-timeout-seconds', type=int, default=600)
+    ap.add_argument('--review-thread-timeout-seconds', type=int, default=0)
+    ap.add_argument('--review-repair-attempts', type=int, default=2)
+    ap.add_argument('--review-agents', default='codex,copilot', help='Comma-separated review agents to request: codex,copilot')
+    ap.add_argument('--review-agent-timeout-seconds', type=int, default=600)
+    ap.add_argument('--review-agent-poll-seconds', type=int, default=15)
+    ap.add_argument('--no-resolve-review-threads', dest='resolve_review_threads', action='store_false')
+    ap.add_argument('--runs-root', default=str(Path.home() / '.codex' / 'runs' / 'codebase-review'))
+    ap.add_argument('--cleanup-artifacts', action='store_true', help='List or remove old run directories and slice worktrees.')
+    ap.add_argument('--cleanup-older-than-days', type=int, default=30)
+    ap.add_argument('--confirm-cleanup', action='store_true', help='Required to remove artifacts when --cleanup-artifacts is used without --dry-run.')
+    ap.set_defaults(resolve_review_threads=True)
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
+    if args.cleanup_artifacts:
+        return cleanup_artifacts(args)
+    if not args.slice_plan or not args.waves:
+        print('slice_plan and waves are required unless --cleanup-artifacts is used', file=sys.stderr)
+        return 2
     if args.codex_agent:
         print('--codex-agent is not supported by this local orchestrator yet', file=sys.stderr)
         return 2
@@ -850,6 +1415,26 @@ def main():
         args.allow_pr = False
     if args.max_parallel <= 0:
         print('--max-parallel must be greater than zero', file=sys.stderr)
+        return 2
+    if args.review_repair_attempts < 0:
+        print('--review-repair-attempts must be zero or greater', file=sys.stderr)
+        return 2
+    if args.review_timeout_seconds < 0:
+        print('--review-timeout-seconds must be zero or greater', file=sys.stderr)
+        return 2
+    if args.review_thread_timeout_seconds < 0:
+        print('--review-thread-timeout-seconds must be zero or greater', file=sys.stderr)
+        return 2
+    if args.review_agent_timeout_seconds < 0:
+        print('--review-agent-timeout-seconds must be zero or greater', file=sys.stderr)
+        return 2
+    if args.review_agent_poll_seconds < 0:
+        print('--review-agent-poll-seconds must be zero or greater', file=sys.stderr)
+        return 2
+    try:
+        parse_review_agents(args.review_agents)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
         return 2
     merge_enabled = args.allow_merge and not args.no_merge
     merge_mode = 'disabled' if not merge_enabled else 'allowed'
@@ -931,6 +1516,7 @@ def main():
                 state['waves'][wave_id]['status'] = 'failed'
                 state['waves'][wave_id]['completed_at'] = now_utc()
                 write_json(run_dir / 'run-state.json', state)
+                write_run_summary(run_dir, state)
                 for item in failed:
                     print(f'{item.get("slice_id", item.get("branch", "slice"))} failed: {item.get("error", "unknown error")}', file=sys.stderr)
                 print(f'wave {wave_id} failed; later waves blocked', file=sys.stderr)
@@ -948,7 +1534,9 @@ def main():
             state['waves'][wave_id]['status'] = 'succeeded'
             state['waves'][wave_id]['completed_at'] = now_utc()
             write_json(run_dir / 'run-state.json', state)
+            write_run_summary(run_dir, state)
 
+        write_run_summary(run_dir, state)
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI entrypoint reports precise failure
         print(f'ERROR: {exc}', file=sys.stderr)

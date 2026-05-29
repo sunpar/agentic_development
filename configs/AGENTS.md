@@ -51,6 +51,11 @@
 - Avoid destructive git operations.
 - Back up existing personal Codex files before overwrite as required.
 
+## 11) Long-term source sync
+- Treat `/Users/sunpar/workspace/agentic_development` as the durable source repository for this system.
+- When changing installed or personal Codex copies, mirror the corresponding source changes into this repository before reporting completion.
+- Keep generated run state, backups, caches, and local-only artifacts out of the durable repository.
+
 ## Additional execution constraints
 - Before coding in a repo, inspect repo structure and local instructions (`AGENTS.md`-style files, workflow docs).
 - Use TDD for implementation tasks unless test-infeasible due to scope type.
