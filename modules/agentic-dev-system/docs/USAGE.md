@@ -21,6 +21,7 @@ python3 ~/.codex/codebase-review-factory/scripts/sync_skills.py
 3. Pick the flow:
 
 - New feature or initial build: start with `repo-context-map`, then `task-generator`, `wave-validator`, `task-implementor`, `task-reviewer`, `commit-pr`, and `request-agent-review`.
+- Feature-model-driven implementation: generate `docs/agentic-system/implementation/implementation-plan.json` with `feature_task_generator.py`, validate it with `validate_plan.py`, then prepare task worktrees with `orchestrate_implementation_waves.py`.
 - Existing codebase review/refactor: start with `detect_repo_inventory.py`, then `feature-model-builder`, `feature-slice-generator`, `reviewable-slice-validator`, `slice-review-workflow`, `slice-refactor-workflow`, and `slice-pr-lifecycle`.
 
 ## Artifact Directory
@@ -34,6 +35,11 @@ docs/agentic-system/
   build/
     plan.json
     tasks/
+  implementation/
+    implementation-plan.json
+    tasks.csv
+    tasks/
+    epics/
   review/
     slice-plan.json
     slices.csv
@@ -41,6 +47,17 @@ docs/agentic-system/
 ```
 
 Some compatibility scripts still default to historical paths. Pass explicit `--output` or `--output-dir` values when you want the unified artifact layout.
+
+## Implementation Wave Preparation
+
+```bash
+python3 ~/.codex/codebase-review-factory/scripts/feature_task_generator.py docs/agentic-system/feature-model.json --output-dir docs/agentic-system/implementation
+python3 ~/.codex/agentic-dev-system/scripts/validate_plan.py docs/agentic-system/implementation/implementation-plan.json
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py docs/agentic-system/implementation/implementation-plan.json --wave 1 --worktree-dir ~/.codex/worktrees/implementation --dry-run
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py docs/agentic-system/implementation/implementation-plan.json --wave 1 --worktree-dir ~/.codex/worktrees/implementation --base-ref HEAD
+```
+
+The implementation-wave executor prepares task worktrees and writes run state under `~/.codex/runs/implementation-waves/` by default. It does not run Codex, create PRs, request reviews, or merge.
 
 ## Detailed Examples
 

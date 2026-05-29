@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -169,6 +171,18 @@ class TestOrchestrator(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('waves=1', result.stdout)
 
+    def test_review_timeout_defaults_are_bounded(self):
+        module = load_orchestrator_module()
+        old_argv = sys.argv
+        try:
+            sys.argv = ['orchestrate_slice_waves.py', 'slice-plan.json', 'waves.json']
+            args = module.parse_args()
+        finally:
+            sys.argv = old_argv
+        self.assertEqual(args.review_timeout_seconds, 600)
+        self.assertEqual(args.review_agent_timeout_seconds, 600)
+        self.assertEqual(args.review_thread_timeout_seconds, 0)
+
     def test_list_shaped_waves_file(self):
         with tempfile.TemporaryDirectory() as td:
             waves = Path(td) / 'waves.json'
@@ -278,6 +292,74 @@ class TestOrchestrator(unittest.TestCase):
             self.assertEqual(state['slices']['SLICE-001']['status'], 'succeeded')
             self.assertEqual(state['slices']['SLICE-002']['status'], 'succeeded')
             self.assertFalse((repo / 'run-state.json').exists())
+            summary = json.loads((run_dir / 'run-summary.json').read_text())
+            self.assertEqual(summary['totals']['slices'], 2)
+            self.assertEqual(summary['totals']['by_status']['succeeded'], 2)
+            self.assertEqual(summary['waves'][0]['status'], 'succeeded')
+            self.assertIn('SLICE-001', (run_dir / 'run-summary.md').read_text())
+
+    def test_cleanup_artifacts_dry_run_lists_old_runs_and_worktrees_without_removing(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_root = Path(td) / 'runs'
+            worktrees = Path(td) / 'worktrees'
+            old_run = runs_root / 'repo-20200101T000000Z'
+            new_run = runs_root / 'repo-new'
+            old_worktree = worktrees / 'codebase-review-old'
+            new_worktree = worktrees / 'codebase-review-new'
+            for path in [old_run, new_run, old_worktree, new_worktree]:
+                path.mkdir(parents=True)
+            (old_run / 'run-state.json').write_text('{}\n')
+            (new_run / 'run-state.json').write_text('{}\n')
+            old_time = time.time() - (60 * 60 * 24 * 40)
+            os.utime(old_run, (old_time, old_time))
+            os.utime(old_worktree, (old_time, old_time))
+
+            result = run([
+                PY,
+                str(SCRIPT),
+                '--cleanup-artifacts',
+                '--dry-run',
+                '--runs-root',
+                str(runs_root),
+                '--worktree-dir',
+                str(worktrees),
+                '--cleanup-older-than-days',
+                '30',
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn(f'[dry-run] remove run_dir {old_run}', result.stdout)
+            self.assertIn(f'[dry-run] remove worktree {old_worktree}', result.stdout)
+            self.assertNotIn(str(new_run), result.stdout)
+            self.assertNotIn(str(new_worktree), result.stdout)
+            self.assertTrue(old_run.exists())
+            self.assertTrue(old_worktree.exists())
+
+    def test_cleanup_artifacts_removes_worktrees_through_git(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            worktrees = Path(td) / 'worktrees'
+            old_worktree = worktrees / 'codebase-review-old'
+            git(repo, 'worktree', 'add', '-b', 'codebase-review/old', str(old_worktree), 'HEAD')
+            old_time = time.time() - (60 * 60 * 24 * 40)
+            os.utime(old_worktree, (old_time, old_time))
+
+            result = run([
+                PY,
+                str(SCRIPT),
+                '--cleanup-artifacts',
+                '--confirm-cleanup',
+                '--runs-root',
+                str(Path(td) / 'runs'),
+                '--worktree-dir',
+                str(worktrees),
+                '--cleanup-older-than-days',
+                '30',
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertFalse(old_worktree.exists())
+            self.assertNotIn(str(old_worktree), git(repo, 'worktree', 'list', '--porcelain').stdout)
 
     def test_uses_first_working_codex_binary_from_path(self):
         with tempfile.TemporaryDirectory() as td:
@@ -749,6 +831,8 @@ class TestOrchestrator(unittest.TestCase):
             self.assertTrue(result)
             self.assertIn('--require-review-after', calls[0])
             self.assertEqual(calls[0][calls[0].index('--require-review-after') + 1], '2026-05-22T13:00:00Z')
+            self.assertIn('--review-thread-timeout-seconds', calls[0])
+            self.assertEqual(calls[0][calls[0].index('--review-thread-timeout-seconds') + 1], '0')
 
     def test_merge_slice_blocks_review_request_without_timestamp(self):
         with tempfile.TemporaryDirectory() as td:
@@ -775,6 +859,222 @@ class TestOrchestrator(unittest.TestCase):
             }
             with self.assertRaisesRegex(RuntimeError, 'review request timestamp missing'):
                 module.merge_slice({'id': 'SLICE-001'}, args, run_dir, state)
+
+    def test_merge_slice_repairs_unresolved_review_threads_and_retries_gate(self):
+        with tempfile.TemporaryDirectory() as td:
+            module = load_orchestrator_module()
+            run_dir = Path(td) / 'run'
+            (run_dir / 'slices' / 'SLICE-001').mkdir(parents=True)
+            merge_calls = []
+            repairs = []
+
+            def fake_run_cmd(cmd, cwd=None, timeout=None):
+                merge_calls.append(cmd)
+                if len(merge_calls) == 1:
+                    return types.SimpleNamespace(returncode=1, stdout='', stderr='ERROR: unresolved review threads: 1: src/a.txt:1 by codex: fix this')
+                return types.SimpleNamespace(returncode=0, stdout='', stderr='')
+
+            def fake_repair(slice_item, args, repair_run_dir, plan_copy, state, attempt):
+                repairs.append((slice_item['id'], attempt, str(plan_copy)))
+                state['slices']['SLICE-001']['head_sha'] = 'new-head'
+                state['slices']['SLICE-001']['review_requested_at'] = '2026-05-22T14:00:00Z'
+                return True
+
+            module.run_cmd = fake_run_cmd
+            module.repair_review_threads = fake_repair
+            args = types.SimpleNamespace(
+                merge_method='squash',
+                ci_timeout_seconds=1,
+                ci_poll_seconds=1,
+                review_timeout_seconds=1,
+                review_repair_attempts=1,
+                delete_branch=False,
+                allow_review_request=True,
+            )
+            state = {
+                'slices': {
+                    'SLICE-001': {
+                        'status': 'pr_ready',
+                        'pr_number': 123,
+                        'worktree': str(Path(td)),
+                        'head_sha': 'old-head',
+                        'review_requested_at': '2026-05-22T13:00:00Z',
+                    }
+                }
+            }
+            result = module.merge_slice({'id': 'SLICE-001'}, args, run_dir, state)
+            self.assertTrue(result)
+            self.assertEqual(repairs, [('SLICE-001', 1, str(run_dir / 'slice-plan.json'))])
+            self.assertEqual(len(merge_calls), 2)
+            self.assertEqual(merge_calls[1][merge_calls[1].index('--expected-head-sha') + 1], 'new-head')
+            self.assertEqual(merge_calls[1][merge_calls[1].index('--require-review-after') + 1], '2026-05-22T14:00:00Z')
+
+    def test_request_reviews_requests_codex_and_copilot_and_waits_for_each(self):
+        with tempfile.TemporaryDirectory() as td:
+            module = load_orchestrator_module()
+            calls = []
+            calls_lock = threading.Lock()
+            copilot_request_started = threading.Event()
+
+            def fake_run_cmd(cmd, cwd=None, timeout=None):
+                with calls_lock:
+                    calls.append(cmd)
+                if cmd[:3] == ['gh', 'pr', 'comment']:
+                    if not copilot_request_started.wait(1):
+                        return types.SimpleNamespace(returncode=98, stdout='', stderr='codex request started before copilot request was submitted')
+                    return types.SimpleNamespace(returncode=0, stdout='', stderr='')
+                if cmd[:3] == ['gh', 'pr', 'edit']:
+                    copilot_request_started.set()
+                    return types.SimpleNamespace(returncode=0, stdout='', stderr='')
+                if cmd[:3] == ['gh', 'pr', 'view']:
+                    payload = {
+                        'latestReviews': [
+                            {
+                                'author': {'login': 'codex-reviewer'},
+                                'submittedAt': '2026-05-22T14:00:01Z',
+                                'state': 'COMMENTED',
+                            },
+                            {
+                                'author': {'login': 'copilot-pull-request-reviewer'},
+                                'submittedAt': '2026-05-22T14:00:02Z',
+                                'state': 'COMMENTED',
+                            },
+                        ],
+                        'comments': [],
+                    }
+                    return types.SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr='')
+                return types.SimpleNamespace(returncode=99, stdout='', stderr='unexpected')
+
+            module.run_cmd = fake_run_cmd
+            module.now_utc = lambda: '2026-05-22T14:00:00Z'
+            args = types.SimpleNamespace(
+                review_agents='codex,copilot',
+                review_agent_timeout_seconds=5,
+                review_agent_poll_seconds=0,
+            )
+
+            result = module.request_reviews(Path(td), 123, slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt'), args)
+
+            self.assertEqual(result['requested_at'], '2026-05-22T14:00:00Z')
+            self.assertEqual(set(result['agents']), {'codex', 'copilot'})
+            self.assertEqual(result['agents']['codex']['status'], 'completed')
+            self.assertEqual(result['agents']['copilot']['status'], 'completed')
+            self.assertEqual(result['completed_agents'], ['codex', 'copilot'])
+            self.assertEqual(result['timed_out_agents'], [])
+            self.assertEqual(result['review_gate_required_at'], '2026-05-22T14:00:00Z')
+            self.assertIn(['gh', 'pr', 'comment', '123', '--body'], [call[:5] for call in calls])
+            self.assertIn(['gh', 'pr', 'edit', '123', '--add-reviewer', '@copilot'], calls)
+
+    def test_request_reviews_records_timeout_without_failing(self):
+        with tempfile.TemporaryDirectory() as td:
+            module = load_orchestrator_module()
+
+            def fake_run_cmd(cmd, cwd=None, timeout=None):
+                if cmd[:3] == ['gh', 'pr', 'comment']:
+                    return types.SimpleNamespace(returncode=0, stdout='', stderr='')
+                if cmd[:3] == ['gh', 'pr', 'view']:
+                    return types.SimpleNamespace(returncode=0, stdout=json.dumps({'latestReviews': [], 'comments': []}), stderr='')
+                return types.SimpleNamespace(returncode=99, stdout='', stderr='unexpected')
+
+            module.run_cmd = fake_run_cmd
+            module.now_utc = lambda: '2026-05-22T14:00:00Z'
+            args = types.SimpleNamespace(
+                review_agents='codex',
+                review_agent_timeout_seconds=0,
+                review_agent_poll_seconds=0,
+            )
+
+            result = module.request_reviews(Path(td), 123, slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt'), args)
+
+            self.assertEqual(result['agents']['codex']['status'], 'timed_out')
+            self.assertEqual(result['timed_out_agents'], ['codex'])
+            self.assertEqual(result['completed_agents'], [])
+            self.assertIsNone(result['review_gate_required_at'])
+
+    def test_request_reviews_records_failed_agent_without_failing(self):
+        with tempfile.TemporaryDirectory() as td:
+            module = load_orchestrator_module()
+
+            def fake_run_cmd(cmd, cwd=None, timeout=None):
+                if cmd[:3] == ['gh', 'pr', 'comment']:
+                    return types.SimpleNamespace(returncode=0, stdout='', stderr='')
+                if cmd[:3] == ['gh', 'pr', 'edit']:
+                    return types.SimpleNamespace(returncode=1, stdout='', stderr='unsupported reviewer')
+                if cmd[:3] == ['gh', 'pr', 'view']:
+                    payload = {
+                        'latestReviews': [{
+                            'author': {'login': 'codex-reviewer'},
+                            'submittedAt': '2026-05-22T14:00:01Z',
+                            'state': 'COMMENTED',
+                        }],
+                        'comments': [],
+                    }
+                    return types.SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr='')
+                return types.SimpleNamespace(returncode=99, stdout='', stderr='unexpected')
+
+            module.run_cmd = fake_run_cmd
+            module.now_utc = lambda: '2026-05-22T14:00:00Z'
+            args = types.SimpleNamespace(
+                review_agents='codex,copilot',
+                review_agent_timeout_seconds=0,
+                review_agent_poll_seconds=0,
+            )
+
+            result = module.request_reviews(Path(td), 123, slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt'), args)
+
+            self.assertEqual(result['completed_agents'], ['codex'])
+            self.assertEqual(result['failed_agents'], ['copilot'])
+            self.assertEqual(result['agents']['copilot']['status'], 'failed')
+            self.assertIn('unsupported reviewer', result['agents']['copilot']['error'])
+            self.assertEqual(result['review_gate_required_at'], '2026-05-22T14:00:00Z')
+
+    def test_review_repair_resolves_only_threads_no_longer_active(self):
+        with tempfile.TemporaryDirectory() as td:
+            module = load_orchestrator_module()
+            run_dir = Path(td) / 'run'
+            worktree = Path(td) / 'worktree'
+            run_dir.mkdir()
+            worktree.mkdir()
+            thread_one = {'id': 'thread-one', 'path': 'src/a.txt'}
+            thread_two = {'id': 'thread-two', 'path': 'src/b.txt'}
+            active_thread_calls = [[thread_one, thread_two], [thread_two]]
+            resolved = []
+
+            module.active_review_threads = lambda *_args: active_thread_calls.pop(0)
+            module.codex_command = lambda *_args, **_kwargs: ['codex-fake']
+            module.run_cmd = lambda *_args, **_kwargs: types.SimpleNamespace(returncode=0, stdout='', stderr='')
+            module.move_legacy_slice_artifacts = lambda *_args: []
+            module.changed_files_in_scope = lambda *_args: ['src/a.txt']
+            module.verification_results = lambda *_args: []
+            module.fail_on_verification = lambda *_args: None
+            module.commit_slice = lambda *_args, **_kwargs: 'new-head'
+            module.push_branch = lambda *_args: None
+            module.resolve_review_thread = lambda _worktree, thread_id: resolved.append(thread_id) or {'thread_id': thread_id}
+            args = types.SimpleNamespace(resolve_review_threads=True, allow_review_request=False)
+            state = {
+                'slices': {
+                    'SLICE-001': {
+                        'worktree': str(worktree),
+                        'pr_number': 123,
+                        'head_sha': 'old-head',
+                    }
+                }
+            }
+
+            result = module.repair_review_threads(
+                slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt'),
+                args,
+                run_dir,
+                run_dir / 'slice-plan.json',
+                state,
+                1,
+            )
+
+            self.assertTrue(result)
+            self.assertEqual(resolved, ['thread-one'])
+            repair = state['slices']['SLICE-001']['review_repair_attempts'][0]
+            self.assertEqual(repair['active_thread_count_after_repair'], 1)
+            self.assertEqual(repair['skipped_active_threads'], ['thread-two'])
 
     def test_reused_worktree_must_be_clean(self):
         with tempfile.TemporaryDirectory() as td:

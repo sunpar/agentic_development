@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -121,7 +122,27 @@ def setup_fake_environment(td, view=None, checks=None, threads=None):
     return fake, env
 
 
+def load_merge_gate_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location('merge_gate_for_test', SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class TestMergeGate(unittest.TestCase):
+    def test_review_timeout_defaults_are_bounded(self):
+        module = load_merge_gate_module()
+        old_argv = sys.argv
+        try:
+            sys.argv = ['merge_gate.py', '--pr', '123']
+            args = module.parse_args()
+        finally:
+            sys.argv = old_argv
+        self.assertEqual(args.review_timeout_seconds, 600)
+        self.assertEqual(args.review_thread_timeout_seconds, 0)
+
     def test_successful_merge_uses_head_sha_and_method(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)
@@ -166,9 +187,57 @@ class TestMergeGate(unittest.TestCase):
     def test_unresolved_review_thread_blocks_merge(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)
-            threads = {'data': {'repository': {'pullRequest': {'reviewThreads': {'nodes': [{'isResolved': False, 'isOutdated': False, 'comments': {'nodes': [{'body': 'must fix this'}]}}]}}}}}
+            threads = {'data': {'repository': {'pullRequest': {'reviewThreads': {'nodes': [{'isResolved': False, 'isOutdated': False, 'path': 'src/a.py', 'line': 12, 'comments': {'nodes': [{'body': 'must fix this', 'author': {'login': 'codex'}}]}}]}}}}}
             _, env = setup_fake_environment(td, threads=threads)
             result = run([PY, str(SCRIPT), '--pr', '123', '--repo-path', str(repo), '--allow-merge'], env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('unresolved review threads', result.stderr + result.stdout)
+            self.assertIn('src/a.py:12 by codex: must fix this', result.stderr + result.stdout)
+
+    def test_review_thread_timeout_is_independent_from_review_submission_timeout(self):
+        module = load_merge_gate_module()
+        sleep_calls = []
+        threads = [{
+            'isResolved': False,
+            'isOutdated': False,
+            'path': 'src/a.py',
+            'line': 12,
+            'comments': {'nodes': [{'body': 'must fix this', 'author': {'login': 'codex'}}]},
+        }]
+        module.review_threads = lambda repo, pr_number: threads
+        module.time.sleep = lambda seconds: sleep_calls.append(seconds)
+
+        started = time.monotonic()
+        with self.assertRaisesRegex(RuntimeError, 'unresolved review threads'):
+            module.wait_for_review_threads_clear(Path('/tmp/repo'), 123, timeout_seconds=0, poll_seconds=15)
+
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(sleep_calls, [])
+
+    def test_review_thread_timeout_arg_keeps_thread_blockers_fast_with_review_wait(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            threads = {'data': {'repository': {'pullRequest': {'reviewThreads': {'nodes': [{
+                'isResolved': False,
+                'isOutdated': False,
+                'path': 'src/a.py',
+                'line': 12,
+                'comments': {'nodes': [{'body': 'must fix this', 'author': {'login': 'codex'}}]},
+            }]}}}}}
+            _, env = setup_fake_environment(td, threads=threads)
+            result = run([
+                PY,
+                str(SCRIPT),
+                '--pr',
+                '123',
+                '--repo-path',
+                str(repo),
+                '--allow-merge',
+                '--review-timeout-seconds',
+                '600',
+                '--review-thread-timeout-seconds',
+                '0',
+            ], env=env)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('unresolved review threads', result.stderr + result.stdout)
 
@@ -337,6 +406,114 @@ class TestMergeGate(unittest.TestCase):
                 '2026-05-22T13:00:00Z',
             ], env=env)
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+    def test_require_review_after_accepts_later_codex_review_comment(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            view = {
+                'number': 123,
+                'state': 'OPEN',
+                'isDraft': False,
+                'mergeable': 'MERGEABLE',
+                'mergeStateStatus': 'CLEAN',
+                'reviewDecision': '',
+                'headRefOid': 'abc123',
+                'latestReviews': [],
+                'comments': [
+                    {
+                        'author': {'login': 'chatgpt-codex-connector'},
+                        'body': "Codex Review: Didn't find any major issues.",
+                        'createdAt': '2026-05-22T13:01:00Z',
+                    }
+                ],
+            }
+            _, env = setup_fake_environment(td, view=view)
+            result = run([
+                PY,
+                str(SCRIPT),
+                '--pr',
+                '123',
+                '--repo-path',
+                str(repo),
+                '--allow-merge',
+                '--require-review-after',
+                '2026-05-22T13:00:00Z',
+            ], env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+    def test_require_review_after_ignores_nonblocking_p1_mentions(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            view = {
+                'number': 123,
+                'state': 'OPEN',
+                'isDraft': False,
+                'mergeable': 'MERGEABLE',
+                'mergeStateStatus': 'CLEAN',
+                'reviewDecision': '',
+                'headRefOid': 'abc123',
+                'latestReviews': [],
+                'comments': [
+                    {
+                        'author': {'login': 'sunpar'},
+                        'body': '@codex review\n\nFocus: P1 issues and regressions',
+                        'createdAt': '2026-05-22T13:00:05Z',
+                    },
+                    {
+                        'author': {'login': 'chatgpt-codex-connector'},
+                        'body': "Codex Review: No P1 findings. Didn't find any major issues.",
+                        'createdAt': '2026-05-22T13:01:00Z',
+                    },
+                ],
+            }
+            _, env = setup_fake_environment(td, view=view)
+            result = run([
+                PY,
+                str(SCRIPT),
+                '--pr',
+                '123',
+                '--repo-path',
+                str(repo),
+                '--allow-merge',
+                '--require-review-after',
+                '2026-05-22T13:00:00Z',
+            ], env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+    def test_require_review_after_blocks_later_codex_must_fix_comment(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            view = {
+                'number': 123,
+                'state': 'OPEN',
+                'isDraft': False,
+                'mergeable': 'MERGEABLE',
+                'mergeStateStatus': 'CLEAN',
+                'reviewDecision': '',
+                'headRefOid': 'abc123',
+                'latestReviews': [],
+                'comments': [
+                    {
+                        'author': {'login': 'chatgpt-codex-connector'},
+                        'body': 'Codex Review: must fix the unsafe edge case before merge.',
+                        'createdAt': '2026-05-22T13:01:00Z',
+                    }
+                ],
+            }
+            _, env = setup_fake_environment(td, view=view)
+            result = run([
+                PY,
+                str(SCRIPT),
+                '--pr',
+                '123',
+                '--repo-path',
+                str(repo),
+                '--allow-merge',
+                '--require-review-after',
+                '2026-05-22T13:00:00Z',
+            ], env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('blocking review comments', result.stderr + result.stdout)
 
     def test_require_review_after_waits_through_review_required_decision(self):
         with tempfile.TemporaryDirectory() as td:
