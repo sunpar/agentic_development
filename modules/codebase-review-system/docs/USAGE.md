@@ -26,6 +26,21 @@ Feature implementation tasks are generated separately from review/refactor slice
 python3 ~/.codex/codebase-review-factory/scripts/feature_task_generator.py \
   docs/agentic-system/feature-model.json \
   --output-dir docs/agentic-system/implementation
+
+python3 ~/.codex/agentic-dev-system/scripts/validate_plan.py \
+  docs/agentic-system/implementation/implementation-plan.json
+
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py \
+  docs/agentic-system/implementation/implementation-plan.json \
+  --wave 1 \
+  --worktree-dir ~/.codex/worktrees/implementation \
+  --dry-run
+
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py \
+  docs/agentic-system/implementation/implementation-plan.json \
+  --wave 1 \
+  --worktree-dir ~/.codex/worktrees/implementation \
+  --base-ref HEAD
 ```
 
 The generator writes:
@@ -37,6 +52,8 @@ The generator writes:
 - `epics/EPIC-*.md` summaries.
 
 Use `--feature FEATURE-ID` to generate tasks for one feature, and `--dry-run` to print JSON without writing files.
+
+`orchestrate_implementation_waves.py` prepares task worktrees, emits per-task prompts, and writes external run state under `~/.codex/runs/implementation-waves/`. It does not run Codex, create PRs, request reviews, or merge.
 
 ## Merge Policy
 

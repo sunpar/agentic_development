@@ -199,6 +199,8 @@ python3 ~/.codex/codebase-review-factory/scripts/ci_debug_and_merge.py --pr 123 
 For implementation waves:
 
 ```bash
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py docs/agentic-system/implementation/implementation-plan.json --wave WAVE-ID --worktree-dir ~/.codex/worktrees/implementation --dry-run
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py docs/agentic-system/implementation/implementation-plan.json --wave WAVE-ID --worktree-dir ~/.codex/worktrees/implementation --base-ref HEAD
 python3 ~/.codex/agentic-dev-system/scripts/merge_wave.py --plan docs/agentic-system/build/plan.json --wave WAVE-ID --merge
 ```
 

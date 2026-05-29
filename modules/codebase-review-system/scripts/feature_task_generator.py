@@ -176,13 +176,18 @@ def build_plan(model, feature_id=None):
             'dependencies': task['dependencies'],
             'parallel_safety_rationale': 'Serialized by default until implementation tasks are proven independent.',
             'integration_order': [task['id']],
+            'post_wave_verification': task['verification_commands'],
             'post_wave_verification_commands': task['verification_commands'],
         }
         for task in tasks
     ]
     return {
         'source': 'feature_task_generator.py',
+        'feature': (model.get('repo') or {}).get('name') or 'feature-implementation',
         'feature_model_repo': (model.get('repo') or {}).get('name'),
+        'source_documents': [],
+        'assumptions': [],
+        'open_questions': [],
         'epics': epics,
         'milestones': [milestone],
         'releases': [release],

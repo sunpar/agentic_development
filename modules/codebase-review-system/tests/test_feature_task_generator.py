@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts' / 'feature_task_generator.py'
+VALIDATOR = ROOT.parents[0] / 'agentic-dev-system' / 'scripts' / 'validate_plan.py'
 PY = sys.executable
 
 
@@ -69,6 +70,7 @@ class FeatureTaskGeneratorTests(unittest.TestCase):
             with (out_dir / 'tasks.csv').open() as handle:
                 rows = list(csv.DictReader(handle))
             task_markdown = (out_dir / 'tasks' / 'TASK-001.md').read_text()
+            validation = run([PY, str(VALIDATOR), str(out_dir / 'implementation-plan.json')])
 
         self.assertEqual([task['id'] for task in plan['tasks']], ['TASK-001', 'TASK-002'])
         self.assertEqual([epic['id'] for epic in plan['epics']], ['EPIC-001', 'EPIC-002'])
@@ -92,6 +94,7 @@ class FeatureTaskGeneratorTests(unittest.TestCase):
             self.assertIn(key, plan['tasks'][0])
         self.assertIn('Tests To Write First', task_markdown)
         self.assertIn('python3 -m unittest', task_markdown)
+        self.assertEqual(validation.returncode, 0, validation.stderr + validation.stdout)
 
 
 if __name__ == '__main__':
