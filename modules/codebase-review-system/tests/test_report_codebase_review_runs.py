@@ -21,6 +21,57 @@ def run(cmd):
 
 
 class TestReportCodebaseReviewRuns(unittest.TestCase):
+    def test_state_enrichment_treats_empty_slice_detail_dict_as_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'runs'
+            run_dir = root / 'repo-20260529T140000Z'
+            run_dir.mkdir(parents=True)
+            (run_dir / 'run-summary.json').write_text(json.dumps({
+                'repo': '/tmp/repo',
+                'run_dir': str(run_dir),
+                'totals': {
+                    'waves': 1,
+                    'slices': 1,
+                    'by_status': {'pr_ready': 1},
+                },
+                'waves': [{'wave': '1', 'status': 'succeeded', 'slice_ids': ['SLICE-001']}],
+                'slices': [
+                    {'id': 'SLICE-001', 'status': 'pr_ready', 'review_requests': {}},
+                ],
+            }))
+            (run_dir / 'run-state.json').write_text(json.dumps({
+                'repo': '/tmp/repo',
+                'run_dir': str(run_dir),
+                'waves': {'1': {'status': 'succeeded', 'slice_ids': ['SLICE-001']}},
+                'slices': {
+                    'SLICE-001': {
+                        'status': 'pr_ready',
+                        'pr_number': 99,
+                        'review_requests': {
+                            'requested_at': '2026-05-29T14:00:00Z',
+                            'agents': {'codex': {'status': 'completed'}},
+                        },
+                    },
+                },
+            }))
+            output_json = Path(td) / 'aggregate.json'
+
+            result = run([
+                PY,
+                str(SCRIPT),
+                '--runs-root',
+                str(root),
+                '--output-json',
+                str(output_json),
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            aggregate = json.loads(output_json.read_text())
+
+        self.assertEqual(aggregate['runs'][0]['pr_numbers'], [99])
+        self.assertEqual(aggregate['runs'][0]['review_request_count'], 1)
+        self.assertEqual(aggregate['runs'][0]['review_request_agents'], ['codex'])
+
     def test_aggregates_summary_and_state_backed_runs(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / 'runs'

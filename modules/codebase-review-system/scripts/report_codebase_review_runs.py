@@ -115,9 +115,9 @@ def slice_by_id(slices):
 def fill_missing(base, fallback, keys):
     merged = dict(base)
     for key in keys:
-        if merged.get(key) in (None, '', []):
+        if merged.get(key) in (None, '', []) or merged.get(key) == {}:
             value = fallback.get(key)
-            if value not in (None, '', []):
+            if value not in (None, '', []) and value != {}:
                 merged[key] = value
     return merged
 
