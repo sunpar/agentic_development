@@ -87,7 +87,7 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
                 "selected_task_ids": ["TASK-003", "TASK-004"],
                 "tasks": {
                     "TASK-003": {
-                        "status": "pr_ready",
+                        "status": "merged",
                         "wave": 2,
                         "branch": "feature/task-003",
                         "worktree": "/tmp/worktrees/task-003",
@@ -98,6 +98,12 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
                             {"agent": "codex", "returncode": 0},
                             {"agent": "copilot", "returncode": 0},
                         ],
+                        "merge": {
+                            "returncode": 0,
+                            "stdout_log": str(second / "tasks/TASK-003/merge.stdout.log"),
+                            "stderr_log": str(second / "tasks/TASK-003/merge.stderr.log"),
+                        },
+                        "merged_at": "2026-05-29T13:10:00Z",
                     },
                     "TASK-004": {
                         "status": "error",
@@ -132,8 +138,9 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertEqual(aggregate["totals"]["tasks"], 4)
         self.assertEqual(aggregate["totals"]["prs"], 1)
         self.assertEqual(aggregate["totals"]["review_requests"], 2)
+        self.assertEqual(aggregate["totals"]["merged_tasks"], 1)
         self.assertEqual(aggregate["totals"]["by_status"]["planned"], 1)
-        self.assertEqual(aggregate["totals"]["by_status"]["pr_ready"], 1)
+        self.assertEqual(aggregate["totals"]["by_status"]["merged"], 1)
         self.assertEqual(aggregate["totals"]["by_status"]["failed"], 1)
         self.assertEqual(aggregate["totals"]["by_status"]["error"], 1)
         self.assertEqual(aggregate["runs"][0]["failed_tasks"], ["TASK-002"])
@@ -141,6 +148,11 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertEqual(aggregate["runs"][1]["branches"], ["feature/task-003", "feature/task-004"])
         self.assertEqual(aggregate["runs"][1]["pr_numbers"], [123])
         self.assertEqual(aggregate["runs"][1]["review_request_count"], 2)
+        self.assertEqual(aggregate["runs"][1]["merged_tasks"], 1)
+        self.assertEqual(aggregate["runs"][1]["merge_log_paths"], [
+            str(second / "tasks/TASK-003/merge.stderr.log"),
+            str(second / "tasks/TASK-003/merge.stdout.log"),
+        ])
         self.assertEqual(len(aggregate["runs"][0]["resume_commands"]), 1)
         first_resume = aggregate["runs"][0]["resume_commands"][0]
         self.assertIn("--dry-run", first_resume)
@@ -161,6 +173,7 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertIn("failed=TASK-002", markdown)
         self.assertIn("PRs=#123", markdown)
         self.assertIn("review_requests=2", markdown)
+        self.assertIn("merged=1", markdown)
         self.assertIn("Resume:", markdown)
         self.assertIn("--task TASK-004", markdown)
 
