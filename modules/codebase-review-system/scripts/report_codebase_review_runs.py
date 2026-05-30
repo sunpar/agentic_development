@@ -295,6 +295,8 @@ def load_run_summary(run_dir):
             'by_status': dict(totals.get('by_status') or {}),
         },
         'failed_slices': failed_slices,
+        'branches': unique_sorted(item.get('branch') for item in slices),
+        'worktrees': unique_sorted(item.get('worktree') for item in slices),
         'pr_numbers': prs,
         'review_request_count': reviews,
         'review_request_agents': review_request_agents(slices),
@@ -360,6 +362,10 @@ def write_markdown(path, aggregate):
         line = f'- {run["name"]}: {run["totals"]["slices"]} slices ({status_text})'
         if run['failed_slices']:
             line += f'; failed={", ".join(run["failed_slices"])}'
+        if run['branches']:
+            line += '; branches=' + ', '.join(run['branches'])
+        if run['worktrees']:
+            line += '; worktrees=' + ', '.join(run['worktrees'])
         if run['pr_numbers']:
             line += '; PRs=' + ', '.join(f'#{number}' for number in run['pr_numbers'])
         if run['review_request_count']:
