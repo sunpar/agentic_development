@@ -67,6 +67,38 @@ def status_counts(items):
     return counts
 
 
+def pr_count(items):
+    return len({
+        int(item['pr_number'])
+        for item in items
+        if isinstance(item, dict) and item.get('pr_number') is not None
+    })
+
+
+def slice_review_request_count(item):
+    requests = item.get('review_requests')
+    if isinstance(requests, dict):
+        agents = requests.get('agents')
+        if isinstance(agents, (dict, list)):
+            return len(agents)
+        return 1 if requests.get('requested_at') else 0
+    if isinstance(requests, list):
+        return len(requests)
+    return 1 if item.get('review_requested_at') else 0
+
+
+def review_request_count(items):
+    return sum(slice_review_request_count(item) for item in items if isinstance(item, dict))
+
+
+def merged_slice_count(items):
+    return sum(
+        1
+        for item in items
+        if isinstance(item, dict) and str(item.get('status') or '') == 'merged'
+    )
+
+
 def sorted_state_items(mapping):
     return [
         (key, value)
@@ -124,6 +156,9 @@ def run_summary(state):
         'totals': {
             'waves': len(waves),
             'slices': len(slices),
+            'prs': pr_count(slices),
+            'review_requests': review_request_count(slices),
+            'merged_slices': merged_slice_count(slices),
             'by_status': status_counts(slices),
         },
         'waves': waves,
@@ -146,6 +181,9 @@ def write_run_summary(run_dir: Path, state) -> dict:
         '',
         f'- Waves: {summary["totals"]["waves"]}',
         f'- Slices: {summary["totals"]["slices"]}',
+        f'- PRs: {summary["totals"]["prs"]}',
+        f'- Review requests: {summary["totals"]["review_requests"]}',
+        f'- Merged slices: {summary["totals"]["merged_slices"]}',
     ]
     for status, count in sorted(summary['totals']['by_status'].items()):
         lines.append(f'- {status}: {count}')
@@ -157,6 +195,16 @@ def write_run_summary(run_dir: Path, state) -> dict:
         detail = f'- {item["id"]}: {item.get("status") or "unknown"}'
         if item.get('pr_number'):
             detail += f' PR #{item["pr_number"]}'
+        reviews = slice_review_request_count(item)
+        if reviews:
+            detail += f' review_requests={reviews}'
+        if item.get('review_gate_required_at'):
+            detail += f' review_gate={item["review_gate_required_at"]}'
+        repairs = item.get('review_repair_attempts') or []
+        if repairs:
+            detail += f' repairs={len(repairs)}'
+        if item.get('merged_at'):
+            detail += f' merged_at={item["merged_at"]}'
         if item.get('error'):
             detail += f' error={item["error"]}'
         lines.append(detail)
