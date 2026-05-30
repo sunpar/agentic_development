@@ -23,6 +23,13 @@ LIST_FIELDS = [
     'dependencies', 'parallel_conflicts', 'risk_notes', 'acceptance_criteria',
     'review_focus',
 ]
+NONEMPTY_LIST_FIELDS = [
+    'files_to_read',
+    'review_questions',
+    'refactor_targets',
+    'acceptance_criteria',
+    'review_focus',
+]
 
 SLICE_TYPES = {
     'review-only',
@@ -106,6 +113,11 @@ def validate_slice(i, s, ids, errors):
         errors.append(f'{sid}.files_allowed_to_edit required')
     if not s.get('verification_commands'):
         errors.append(f'{sid}.verification_commands required')
+    for field in NONEMPTY_LIST_FIELDS:
+        if field in s and not s.get(field):
+            errors.append(f'{sid}.{field} required')
+    if s.get('slice_type') != 'review-only' and 'tests_to_read' in s and not s.get('tests_to_read'):
+        errors.append(f'{sid}.tests_to_read required')
 
     for field in ['files_to_read', 'docs_to_read', 'tests_to_read', 'files_allowed_to_edit', 'files_not_allowed_to_edit']:
         for path in s.get(field, []):

@@ -13,25 +13,27 @@ The current codebase-intelligence module is a v0.1 scaffold. These items are int
 ## Real Wave Orchestration
 
 - Implemented in `orchestrate_slice_waves.py`: resumable state, per-slice worktrees, `--max-parallel`, wave failure blocking, ordered merge gates, external run state under `~/.codex/runs/codebase-review/`, post-wave `run-summary.json` and `run-summary.md`, and safe cleanup listing/removal for old run directories and worktrees.
-- Remaining follow-up: add aggregate reporting across multiple historical runs.
+- Implemented in `report_codebase_review_runs.py`: aggregate reporting across multiple historical runs, including status totals, failed slices, and PR numbers from `run-summary.json` or `run-state.json`.
 
 ## PR Review And CI Loop
 
 - Implemented for merge gating: GraphQL review-thread checks, required CI checks, review decision, draft/mergeability/head-SHA gates, and split `merge_gate.py` execution.
-- Remaining follow-up: richer provider identity tracking, actionable classification reports, and standalone review-polling UX.
+- Implemented in `poll_review_comments.py`: standalone review polling and saved-payload classification with provider identity counts, actionable `must_fix` / `should_fix` grouping, and Markdown/JSON reports.
 
 ## Hooks
 
 - Implemented with tests and documented inputs: strict hook behavior, slice-state scope fallback, diff-aware slop scanning by default, and Codex transcript payload support for stop summaries.
-- Remaining follow-up: add fixture examples for each installed hook payload and keep hook behavior aligned with future Codex hook schema changes.
+- Implemented hook fixture examples under `fixtures/hooks/` for slice-state scope loading, diff-aware slop detection, and Codex transcript stop-summary payloads.
+- Remaining follow-up: keep hook behavior aligned with future Codex hook schema changes.
 
 ## Schemas And Validators
 
 - Implemented in `validate_slice_plan.py`: required fields, list-shaped fields, unsafe path checks, slice type and risk enums, branch safety, positive expected PR size fields, dependency cycle detection, unknown dependency and parallel-conflict references, wave membership, dependency wave ordering, same-wave edit conflicts, and declared same-wave parallel conflicts.
-- Remaining follow-up: tighten JSON Schema files to match validator behavior, add stricter ID and branch-name patterns, and validate nonempty context/test plans beyond the current `files_allowed_to_edit` and `verification_commands` checks.
+- Implemented tighter `feature_model` and `slice_plan` JSON Schemas with stricter ID and branch-name patterns, enum constraints, positive expected PR size fields, and nonempty arrays where execution needs concrete context.
+- Implemented validator checks for nonempty slice context and test plans beyond `files_allowed_to_edit` and `verification_commands`.
 
 ## Skill Depth
 
-- Promote operational details from manual workflows into skill references.
-- Add good/bad examples, output examples, and concrete procedure contracts.
+- Implemented deeper operational references for maintenance orchestration, wave execution, failure handling, review comment resolution, and reviewable slice validation.
+- Added command examples, output contracts, and good/bad examples for those operational references.
 - Keep manual workflows as explicit opt-in fallbacks.

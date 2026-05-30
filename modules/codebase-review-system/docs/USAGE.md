@@ -63,11 +63,42 @@ When `--allow-review-request` is enabled, the orchestrator requests Codex and Co
 
 If the merge gate finds active review threads, the orchestrator automatically attempts bounded in-scope repair before giving up. Review-thread blockers fail fast by default with `--review-thread-timeout-seconds 0`, so the repair loop can run instead of waiting on already-known unresolved threads. The default is `--review-repair-attempts 2`: fetch active threads, run Codex with the thread JSON and slice scope, verify, commit, push, resolve addressed thread IDs, request fresh Codex and Copilot reviews in parallel, then retry the merge gate. Use `--review-repair-attempts 0` to disable automatic repair, or `--no-resolve-review-threads` to avoid resolving GitHub thread IDs after a pushed repair.
 
+Write a standalone actionable review report:
+
+```bash
+python3 ~/.codex/codebase-review-factory/scripts/poll_review_comments.py \
+  --pr 123 \
+  --output-json actionable-review-report.json \
+  --output-md actionable-review-report.md
+```
+
+For deterministic or offline classification, pass a saved `gh pr view --json comments,reviews,url,number,title` payload:
+
+```bash
+python3 ~/.codex/codebase-review-factory/scripts/poll_review_comments.py \
+  --input-json pr-review-payload.json \
+  --output-json actionable-review-report.json \
+  --output-md actionable-review-report.md
+```
+
+The report normalizes review comments and reviews, records provider counts for Codex, Copilot, and human reviewers, strips explicit nonblocking phrases such as `No P1 findings`, and groups actionable feedback into `must_fix` and `should_fix`.
+
 The wave orchestrator writes run state outside the target repository by default under `~/.codex/runs/codebase-review/`.
 
 Use repeatable `--setup-command` flags for repo-specific worktree setup such as dependency installation. Setup commands run inside each slice worktree before Codex and before verification commands, with `.venv/bin` and `frontend/node_modules/.bin` placed first on `PATH`.
 
 Each orchestration run writes `run-summary.json` and `run-summary.md` beside `run-state.json`. The summary includes wave status, slice status totals, PR numbers when available, and slice errors when a wave blocks.
+
+Aggregate historical runs:
+
+```bash
+python3 ~/.codex/codebase-review-factory/scripts/report_codebase_review_runs.py \
+  --runs-root ~/.codex/runs/codebase-review \
+  --output-json ~/.codex/runs/codebase-review/report.json \
+  --output-md ~/.codex/runs/codebase-review/report.md
+```
+
+The aggregate report scans direct child run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals waves, slices, slice statuses, failed slices, and PR numbers across runs.
 
 List old external run directories and slice worktrees without removing anything:
 
@@ -89,3 +120,9 @@ Hooks are warning-first unless `CODEBASE_REVIEW_FACTORY_STRICT=1` is set.
 - `slice_scope_guard.py` reads `CODEBASE_REVIEW_FACTORY_ALLOWED_SCOPE` first. If that is missing, it can read `CODEBASE_REVIEW_FACTORY_SLICE_STATE` or `CODEBASE_REVIEW_FACTORY_SLICE_STATE_PATH`, plus optional `CODEBASE_REVIEW_FACTORY_SLICE_ID`, from a JSON object containing `files_allowed_to_edit` or a plan-like `slices` array.
 - `slop_guard.py` is diff-aware by default and scans only added lines from `git diff`. Set `CODEBASE_REVIEW_FACTORY_SLOP_PATHS` to scan explicit files instead.
 - `stop_summary_guard.py` reads `CODEBASE_REVIEW_FACTORY_STOP_SUMMARY`, plain stdin text, JSON stdin text, or a Codex-style JSON payload with `transcript_path`.
+
+Fixture examples for supported hook payloads live under `fixtures/hooks/`:
+
+- `slice-state.json` exercises slice-state based scope loading.
+- `slop-added-line.json` exercises diff-aware slop detection by storing split text parts that tests reconstruct.
+- `stop-summary-payload.json` and `stop-transcript.jsonl` exercise Codex transcript payload parsing.

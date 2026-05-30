@@ -1,4 +1,4 @@
-import json, subprocess, sys, tempfile
+import json, re, subprocess, sys, tempfile
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PY=sys.executable
@@ -29,6 +29,60 @@ class TestSlicePlan(unittest.TestCase):
         data['waves'][0]['slice_ids'] = ['SLICE-001', 'SLICE-002']
         data['waves'][0]['integration_order'] = ['SLICE-001', 'SLICE-002']
         self.assertInvalid(data, 'same-wave edit conflict')
+
+    def test_rejects_empty_context_and_test_plans(self):
+        data = json.loads((ROOT/'fixtures/sample_slice_plan.valid.json').read_text())
+        data['slices'][0]['files_to_read'] = []
+        data['slices'][0]['tests_to_read'] = []
+        data['slices'][0]['review_questions'] = []
+        data['slices'][0]['acceptance_criteria'] = []
+
+        self.assertInvalid(data, 'SLICE-001.files_to_read required')
+        self.assertInvalid(data, 'SLICE-001.tests_to_read required')
+        self.assertInvalid(data, 'SLICE-001.review_questions required')
+        self.assertInvalid(data, 'SLICE-001.acceptance_criteria required')
+
+    def test_schema_encodes_validator_constraints(self):
+        schema = json.loads((ROOT/'schemas/slice_plan.schema.json').read_text())
+        slice_schema = schema['properties']['slices']['items']
+        props = slice_schema['properties']
+        wave_schema = schema['properties']['waves']['items']
+
+        self.assertIn('waves', schema['required'])
+        self.assertEqual(schema['properties']['slices']['minItems'], 1)
+        self.assertEqual(props['id']['pattern'], r'^[^\s]+$')
+        self.assertEqual(props['slice_type']['enum'], [
+            'review-only',
+            'review-refactor',
+            'refactor-simplify',
+            'refactor-performance',
+            'refactor-api-coherence',
+            'refactor-dead-code',
+        ])
+        self.assertEqual(props['risk']['enum'], ['low', 'medium', 'high', 'critical'])
+        self.assertEqual(props['files_to_read']['minItems'], 1)
+        self.assertNotIn('minItems', props['tests_to_read'])
+        self.assertEqual(props['verification_commands']['minItems'], 1)
+        self.assertEqual(props['expected_pr_size']['properties']['max_files_changed']['minimum'], 1)
+        self.assertEqual(wave_schema['properties']['slice_ids']['minItems'], 1)
+        branch_pattern = props['branch']['pattern']
+        self.assertEqual(branch_pattern, r'^(?!/)(?!.*\.\.)[A-Za-z0-9._/-]+$')
+        self.assertIsNotNone(re.match(branch_pattern, 'codebase-review/SLICE-001-review-core-flow'))
+        self.assertIsNone(re.match(branch_pattern, '/tmp'))
+        self.assertIsNone(re.match(branch_pattern, '../escape'))
+        self.assertIsNone(re.match(branch_pattern, 'feature..bad'))
+
+    def test_review_only_allows_empty_tests_to_read(self):
+        data = json.loads((ROOT/'fixtures/sample_slice_plan.valid.json').read_text())
+        data['slices'][0]['slice_type'] = 'review-only'
+        data['slices'][0]['tests_to_read'] = []
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td)/'slice-plan.json'
+            path.write_text(json.dumps(data), encoding='utf-8')
+            result = subprocess.run([PY, str(ROOT/'scripts/validate_slice_plan.py'), str(path)], text=True, stdout=subprocess.PIPE)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_generated_slice_plan_serializes_slices(self):
         feature_model = {

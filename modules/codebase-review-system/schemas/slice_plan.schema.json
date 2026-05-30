@@ -1,8 +1,185 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "slices": {
       "items": {
+        "additionalProperties": true,
+        "properties": {
+          "acceptance_criteria": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "branch": {
+            "pattern": "^(?!/)(?!.*\\.\\.)[A-Za-z0-9._/-]+$",
+            "type": "string"
+          },
+          "dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "description": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "docs_to_read": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "entry_points": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "expected_pr_size": {
+            "additionalProperties": true,
+            "properties": {
+              "max_files_changed": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_lines_changed_soft": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "max_files_changed",
+              "max_lines_changed_soft"
+            ],
+            "type": "object"
+          },
+          "feature_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "files_allowed_to_edit": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "files_not_allowed_to_edit": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "files_to_read": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "id": {
+            "pattern": "^[^\\s]+$",
+            "type": "string"
+          },
+          "intended_behavior": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "invariants": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "non_goals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "parallel_conflicts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pr_title": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "refactor_targets": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "review_focus": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "review_questions": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "risk": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "type": "string"
+          },
+          "risk_notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "slice_type": {
+            "enum": [
+              "review-only",
+              "review-refactor",
+              "refactor-simplify",
+              "refactor-performance",
+              "refactor-api-coherence",
+              "refactor-dead-code"
+            ],
+            "type": "string"
+          },
+          "tests_to_read": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "verification_commands": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "why_this_slice_exists": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
         "required": [
           "id",
           "feature_id",
@@ -34,14 +211,50 @@
         ],
         "type": "object"
       },
+      "minItems": 1,
       "type": "array"
     },
     "waves": {
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "integration_order": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "parallel_safety_rationale": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "slice_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "wave": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "wave",
+          "slice_ids",
+          "parallel_safety_rationale",
+          "integration_order"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
       "type": "array"
     }
   },
   "required": [
-    "slices"
+    "slices",
+    "waves"
   ],
   "type": "object"
 }

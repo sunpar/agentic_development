@@ -71,6 +71,7 @@
 - `~/.codex/codebase-review-factory/scripts/emit_slices_csv.py`
 - `~/.codex/codebase-review-factory/scripts/run_slice_with_codex.py`
 - `~/.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py`
+- `~/.codex/codebase-review-factory/scripts/report_codebase_review_runs.py`
 - `~/.codex/codebase-review-factory/scripts/pr_lifecycle.py`
 - `~/.codex/codebase-review-factory/scripts/request_agent_review.py`
 - `~/.codex/codebase-review-factory/scripts/poll_review_comments.py`

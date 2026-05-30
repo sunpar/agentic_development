@@ -6,7 +6,7 @@ Generated: 2026-05-21T21:18:55
 
 Created the repository intelligence, slice review/refactor, and PR/CI compatibility module under `/Users/sunpar/.codex/codebase-review-factory`. No project repository was edited.
 
-Current maturity note: this is a v0.1 scaffold. It includes inventory, validation, packaging, skills, agents, manual workflows, and dry-run planning helpers. Full feature-task generation and real parallel wave execution remain v0.2 work.
+Current maturity note: the module now includes inventory, validation, packaging, skills, agents, feature-task generation, resumable slice wave orchestration, review/CI merge gates, historical run reporting, and documented hook payload fixtures. Remaining follow-up is tracked in `docs/V0_2_BACKLOG.md`.
 
 Important model policy update: module-controlled agents use a fixed role-specific model matrix. `wave-orchestrator` and `ci-debugger` use `gpt-5.3-codex-spark` with `model_reasoning_effort = "xhigh"`. `pr-review-manager` and `slice-refactorer` use `gpt-5.5` with `model_reasoning_effort = "medium"`. All other module agents and direct Codex slice runners use `gpt-5.5` with `model_reasoning_effort = "xhigh"`. This does not modify global Codex defaults in `~/.codex/config.toml`.
 

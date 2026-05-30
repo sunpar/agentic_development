@@ -1,4 +1,4 @@
-import subprocess, sys
+import json, subprocess, sys, tempfile
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PY=sys.executable
@@ -8,4 +8,27 @@ class TestFeatureModel(unittest.TestCase):
     def test_valid_and_invalid(self):
         self.assertEqual(subprocess.run([PY, str(ROOT/'scripts/validate_feature_model.py'), str(ROOT/'fixtures/sample_feature_model.valid.json')]).returncode, 0)
         self.assertNotEqual(subprocess.run([PY, str(ROOT/'scripts/validate_feature_model.py'), str(ROOT/'fixtures/sample_feature_model.invalid.json')]).returncode, 0)
+
+    def test_schema_encodes_validator_constraints(self):
+        schema = json.loads((ROOT/'schemas/feature_model.schema.json').read_text())
+        feature_schema = schema['properties']['features']['items']
+        repo_schema = schema['properties']['repo']
+
+        self.assertEqual(schema['properties']['features']['minItems'], 1)
+        self.assertEqual(schema['properties']['evidence']['minItems'], 1)
+        self.assertEqual(feature_schema['properties']['id']['pattern'], r'^[^\s]+$')
+        self.assertEqual(feature_schema['properties']['confidence']['enum'], ['high', 'medium', 'low'])
+        self.assertNotIn('minItems', feature_schema['properties']['code_paths'])
+        self.assertEqual(repo_schema['properties']['test_commands']['type'], 'array')
+
+    def test_validator_allows_docs_only_feature_without_code_paths(self):
+        data = json.loads((ROOT/'fixtures/sample_feature_model.valid.json').read_text())
+        data['features'][0]['code_paths'] = []
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td)/'feature-model.json'
+            path.write_text(json.dumps(data), encoding='utf-8')
+            result = subprocess.run([PY, str(ROOT/'scripts/validate_feature_model.py'), str(path)], text=True, stdout=subprocess.PIPE)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
 if __name__=='__main__': unittest.main()
