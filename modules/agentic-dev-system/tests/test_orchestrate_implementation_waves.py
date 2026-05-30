@@ -156,8 +156,11 @@ class ImplementationWaveExecutorTests(unittest.TestCase):
             self.assertTrue(worktree.exists())
             self.assertEqual(git(worktree, "branch", "--show-current").stdout.strip(), "feature/task-001-core-flow")
             summary = json.loads((run_dir / "run-summary.json").read_text())
+            self.assertEqual(summary["implementation_plan"], str(plan.resolve()))
+            self.assertEqual(summary["selected_task_ids"], ["TASK-001"])
             self.assertEqual(summary["totals"]["tasks"], 1)
             self.assertEqual(summary["totals"]["by_status"]["worktree_ready"], 1)
+            self.assertEqual(summary["tasks"][0]["wave"], 1)
             self.assertFalse((repo / "run-summary.json").exists())
 
     def test_wave_option_limits_prepared_tasks(self):

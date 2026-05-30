@@ -276,8 +276,11 @@ def write_summary(run_dir, state):
         "generated_at": now_utc(),
         "repo": state.get("repo"),
         "run_dir": state.get("run_dir"),
+        "implementation_plan": state.get("implementation_plan"),
+        "implementation_plan_sha256": state.get("implementation_plan_sha256"),
         "dry_run": state.get("dry_run"),
         "selected_waves": state.get("selected_waves", []),
+        "selected_task_ids": state.get("selected_task_ids", []),
         "totals": {
             "tasks": len(tasks),
             "by_status": status_counts(tasks),
@@ -286,6 +289,7 @@ def write_summary(run_dir, state):
             {
                 "id": task_id,
                 "status": item.get("status"),
+                "wave": item.get("wave"),
                 "branch": item.get("branch"),
                 "worktree": item.get("worktree"),
                 "prompt_path": item.get("prompt_path"),
@@ -300,14 +304,16 @@ def write_summary(run_dir, state):
         "",
         f"Repo: {summary['repo']}",
         f"Run dir: {summary['run_dir']}",
+        f"Implementation plan: {summary['implementation_plan']}",
         f"Dry run: {summary['dry_run']}",
         f"Selected waves: {summary['selected_waves']}",
+        f"Selected tasks: {summary['selected_task_ids']}",
         "",
         "## Tasks",
         "",
     ]
     for item in summary["tasks"]:
-        line = f"- {item['id']}: {item['status']} `{item['branch']}` -> {item['worktree']}"
+        line = f"- {item['id']} (wave {item['wave']}): {item['status']} `{item['branch']}` -> {item['worktree']}"
         if item.get("error"):
             line += f"; error={item['error']}"
         lines.append(line)
