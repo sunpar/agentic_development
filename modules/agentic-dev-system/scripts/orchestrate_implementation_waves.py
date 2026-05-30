@@ -646,7 +646,7 @@ def parse_args():
     parser.add_argument("--allow-review-request", action="store_true", help="After creating a PR, comment to request configured review agents.")
     parser.add_argument("--review-agents", default="codex")
     parser.add_argument("--allow-merge", action="store_true", help="After PR creation and optional review request, run the shared merge gate with merging enabled.")
-    parser.add_argument("--no-merge", action="store_true", help="Disable merge even when --allow-merge is also provided.")
+    parser.add_argument("--no-merge", "--pr-only", dest="no_merge", action="store_true", help="Disable merge even when --allow-merge is also provided.")
     parser.add_argument("--merge-gate-script", default=str(default_merge_gate_script()))
     parser.add_argument("--merge-method", choices=["squash", "merge", "rebase"], default="squash")
     parser.add_argument("--delete-branch", action="store_true")

@@ -562,6 +562,26 @@ if sys.argv[1:3] == ['pr', 'create']:
             self.assertEqual(result.returncode, 2)
             self.assertIn("--allow-merge requires --allow-pr", result.stderr + result.stdout)
 
+    def test_pr_only_alias_overrides_allow_merge(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            write_plan(plan, [task("TASK-001", 1, "feature/task-001-core-flow")])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(Path(td) / "run"),
+                "--dry-run",
+                "--allow-merge",
+                "--pr-only",
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("DRY-RUN", result.stdout)
+
     def test_wave_option_limits_prepared_tasks(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)
