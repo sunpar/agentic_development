@@ -108,7 +108,7 @@ python3 ~/.codex/agentic-dev-system/scripts/report_implementation_wave_runs.py \
   --output-md ~/.codex/runs/implementation-waves/report.md
 ```
 
-The implementation-wave report scans direct child run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals selected waves, tasks, task statuses, dry-run counts, failed tasks, branches, worktrees, and prompt paths across runs. When state metadata is available, failed tasks include exact resume commands with the run directory, wave, task id, worktree root, dry-run mode, and `--resume --reuse-worktrees`.
+The implementation-wave report scans direct child run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals selected waves, tasks, task statuses, dry-run counts, failed tasks, branches, worktrees, prompt paths, PR numbers, and review-request counts across runs. When state metadata is available, failed tasks include exact resume commands with the run directory, wave, task id, worktree root, dry-run mode, and `--resume --reuse-worktrees`.
 
 List old implementation-wave run directories and task worktrees without removing anything:
 

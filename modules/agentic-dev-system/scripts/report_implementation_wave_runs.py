@@ -51,6 +51,9 @@ def summary_from_state(run_dir):
             "branch": item.get("branch"),
             "worktree": item.get("worktree"),
             "prompt_path": item.get("prompt_path"),
+            "pr_number": item.get("pr_number"),
+            "pr_url": item.get("pr_url"),
+            "review_requests": item.get("review_requests"),
             "error": item.get("error"),
         }
         for task_id, item in sorted_task_items(state.get("tasks"))
@@ -97,7 +100,7 @@ def merge_task_details(summary_tasks, state_tasks):
     state_by_id = task_by_id(state_tasks)
     merged = []
     seen = set()
-    detail_keys = ("wave", "branch", "worktree", "prompt_path", "error")
+    detail_keys = ("wave", "branch", "worktree", "prompt_path", "pr_number", "pr_url", "review_requests", "error")
     for item in summary_tasks:
         task_id = str(item.get("id") or "")
         seen.add(task_id)
@@ -162,6 +165,23 @@ def resume_commands(summary, failed_tasks, tasks):
     return commands
 
 
+def pr_numbers(tasks):
+    return sorted({
+        int(item["pr_number"])
+        for item in tasks
+        if isinstance(item, dict) and item.get("pr_number") is not None
+    })
+
+
+def review_request_count(tasks):
+    total = 0
+    for item in tasks:
+        requests = item.get("review_requests")
+        if isinstance(requests, list):
+            total += len(requests)
+    return total
+
+
 def load_run_summary(run_dir):
     summary_path = run_dir / "run-summary.json"
     state_path = run_dir / "run-state.json"
@@ -184,6 +204,8 @@ def load_run_summary(run_dir):
     ]
     totals = summary.get("totals") or {}
     selected_waves = list(summary.get("selected_waves") or [])
+    prs = pr_numbers(tasks)
+    reviews = review_request_count(tasks)
     return {
         "name": run_dir.name,
         "run_dir": str(run_dir),
@@ -203,6 +225,8 @@ def load_run_summary(run_dir):
         "branches": unique_sorted(item.get("branch") for item in tasks),
         "worktrees": unique_sorted(item.get("worktree") for item in tasks),
         "prompt_paths": unique_sorted(item.get("prompt_path") for item in tasks),
+        "pr_numbers": prs,
+        "review_request_count": reviews,
         "resume_commands": resume_commands(summary, failed_tasks, tasks),
     }
 
@@ -228,6 +252,8 @@ def aggregate_runs(runs_root):
             "dry_runs": sum(1 for run in runs if run["dry_run"]),
             "waves": sum(run["totals"]["waves"] for run in runs),
             "tasks": sum(run["totals"]["tasks"] for run in runs),
+            "prs": sum(len(run["pr_numbers"]) for run in runs),
+            "review_requests": sum(run["review_request_count"] for run in runs),
             "by_status": by_status,
         },
         "runs": runs,
@@ -248,6 +274,8 @@ def write_markdown(path, aggregate):
         f"- Dry runs: {aggregate['totals']['dry_runs']}",
         f"- Waves: {aggregate['totals']['waves']}",
         f"- Tasks: {aggregate['totals']['tasks']}",
+        f"- PRs: {aggregate['totals']['prs']}",
+        f"- Review requests: {aggregate['totals']['review_requests']}",
     ]
     for status, count in sorted(aggregate["totals"]["by_status"].items()):
         lines.append(f"- {status}: {count}")
@@ -265,6 +293,10 @@ def write_markdown(path, aggregate):
             line += f"; failed={', '.join(run['failed_tasks'])}"
         if run["branches"]:
             line += "; branches=" + ", ".join(run["branches"])
+        if run["pr_numbers"]:
+            line += "; PRs=" + ", ".join(f"#{number}" for number in run["pr_numbers"])
+        if run["review_request_count"]:
+            line += f"; review_requests={run['review_request_count']}"
         lines.append(line)
         for command in run.get("resume_commands") or []:
             lines.append(f"  - Resume: `{command}`")
