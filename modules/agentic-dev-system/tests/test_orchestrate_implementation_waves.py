@@ -382,6 +382,84 @@ print('https://github.com/example/repo/pull/123')
             self.assertEqual(result.returncode, 2)
             self.assertIn("--allow-pr requires --allow-codex", result.stderr + result.stdout)
 
+    def test_allow_review_request_comments_on_created_pr(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            add_bare_origin(td, repo)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            bin_dir = Path(td) / "bin"
+            bin_dir.mkdir()
+            codex = fake_codex_bin(bin_dir, """
+import pathlib
+pathlib.Path('src').mkdir(exist_ok=True)
+pathlib.Path('src/task-001.py').write_text('implemented\\n', encoding='utf-8')
+""")
+            gh_log = Path(td) / "gh-calls.log"
+            gh = fake_gh_bin(bin_dir, f"""
+import pathlib
+import sys
+args = ' '.join(sys.argv[1:])
+with pathlib.Path({str(gh_log)!r}).open('a', encoding='utf-8') as handle:
+    handle.write(args + '\\n')
+if sys.argv[1:3] == ['pr', 'create']:
+    print('https://github.com/example/repo/pull/123')
+elif sys.argv[1:3] == ['pr', 'comment']:
+    print('https://github.com/example/repo/pull/123#issuecomment-1')
+""")
+            item = task("TASK-001", 1, "feature/task-001-core-flow")
+            item["verification_commands"] = ["python3 -c \"from pathlib import Path; assert Path('src/task-001.py').exists()\""]
+            write_plan(plan, [item])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--allow-pr",
+                "--allow-review-request",
+                "--review-agents",
+                "codex,copilot",
+                "--codex-bin",
+                str(codex),
+                "--gh-bin",
+                str(gh),
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            calls = gh_log.read_text()
+            self.assertIn("pr comment 123", calls)
+            self.assertIn("@codex please review", calls)
+            self.assertIn("@copilot please review", calls)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            requests = state["tasks"]["TASK-001"]["review_requests"]
+            self.assertEqual([item["agent"] for item in requests], ["codex", "copilot"])
+            self.assertTrue(all(item["returncode"] == 0 for item in requests))
+
+    def test_allow_review_request_requires_allow_pr(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            write_plan(plan, [task("TASK-001", 1, "feature/task-001-core-flow")])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--allow-codex",
+                "--allow-review-request",
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--allow-review-request requires --allow-pr", result.stderr + result.stdout)
+
     def test_wave_option_limits_prepared_tasks(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)

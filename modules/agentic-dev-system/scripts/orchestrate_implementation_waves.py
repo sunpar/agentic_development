@@ -370,6 +370,38 @@ def create_task_pr(args, worktree, task, branch, base_branch, verification):
     }
 
 
+def review_agents(value):
+    agents = [item.strip() for item in str(value or "").split(",") if item.strip()]
+    for agent in agents:
+        if not re.match(r"^[A-Za-z0-9_.-]+$", agent):
+            raise RuntimeError(f"invalid review agent: {agent}")
+    return agents
+
+
+def review_comment_body(agent):
+    return f"@{agent} please review"
+
+
+def request_review_comments(args, worktree, pr, agents):
+    target = str(pr["number"] or pr["url"])
+    records = []
+    for agent in agents:
+        body = review_comment_body(agent)
+        result = run_cmd([args.gh_bin, "pr", "comment", target, "--body", body], cwd=worktree)
+        record = {
+            "agent": agent,
+            "target": target,
+            "body": body,
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
+        records.append(record)
+        if result.returncode:
+            raise RuntimeError(result.stderr or result.stdout or f"review request failed for {agent}")
+    return records
+
+
 def write_task_artifacts(run_dir, plan_path, task):
     task_dir = run_dir / "tasks" / task["id"]
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -447,6 +479,8 @@ def write_summary(run_dir, state):
                 "commit_sha": item.get("commit_sha"),
                 "pr_url": item.get("pr_url"),
                 "pr_number": item.get("pr_number"),
+                "review_requested_at": item.get("review_requested_at"),
+                "review_requests": item.get("review_requests"),
                 "error": item.get("error"),
             }
             for task_id, item in sorted(tasks.items())
@@ -558,6 +592,8 @@ def parse_args():
     parser.add_argument("--allow-pr", action="store_true", help="After successful Codex execution, commit changed files, push the task branch, and create a PR.")
     parser.add_argument("--gh-bin", default="gh")
     parser.add_argument("--pr-base")
+    parser.add_argument("--allow-review-request", action="store_true", help="After creating a PR, comment to request configured review agents.")
+    parser.add_argument("--review-agents", default="codex")
     parser.add_argument("--cleanup-artifacts", action="store_true", help="List or remove old run directories and task worktrees.")
     parser.add_argument("--cleanup-older-than-days", type=int, default=30)
     parser.add_argument("--confirm-cleanup", action="store_true", help="Required to remove artifacts when --cleanup-artifacts is used without --dry-run.")
@@ -576,6 +612,9 @@ def main():
         return 2
     if args.allow_pr and not args.allow_codex:
         print("--allow-pr requires --allow-codex", file=sys.stderr)
+        return 2
+    if args.allow_review_request and not args.allow_pr:
+        print("--allow-review-request requires --allow-pr", file=sys.stderr)
         return 2
     plan_path = Path(args.implementation_plan).resolve()
     try:
@@ -689,6 +728,14 @@ def main():
                                 "completed_at": now_utc(),
                             })
                             checkpoint_state(run_dir, state)
+                            if args.allow_review_request:
+                                requests = request_review_comments(args, worktree_path, pr, review_agents(args.review_agents))
+                                state["tasks"][task_id].update({
+                                    "review_requested_at": now_utc(),
+                                    "review_requests": requests,
+                                    "completed_at": now_utc(),
+                                })
+                                checkpoint_state(run_dir, state)
             except Exception as exc:
                 state["tasks"][task_id].update({
                     "status": "failed",
