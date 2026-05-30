@@ -38,11 +38,15 @@ def log(message: str) -> None:
     print(message)
 
 
+def log_action(message: str, dry_run: bool) -> None:
+    log(f"[dry-run] {message}" if dry_run else message)
+
+
 def backup_existing(path: Path, dry_run: bool) -> None:
     if not path.exists() and not path.is_symlink():
         return
     backup = path.with_name(path.name + ".bak." + timestamp())
-    log(f"backup {path} -> {backup}")
+    log_action(f"backup {path} -> {backup}", dry_run)
     if dry_run:
         return
     path.rename(backup)
@@ -52,7 +56,7 @@ def copy_clean(src: Path, dst: Path, dry_run: bool) -> None:
     if not src.exists():
         raise FileNotFoundError(src)
     backup_existing(dst, dry_run)
-    log(f"copy {src} -> {dst}")
+    log_action(f"copy {src} -> {dst}", dry_run)
     if dry_run:
         return
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -65,12 +69,12 @@ def copy_clean(src: Path, dst: Path, dry_run: bool) -> None:
 def ensure_symlink_or_copy(src: Path, dst: Path, copy: bool, dry_run: bool) -> None:
     backup_existing(dst, dry_run)
     if copy:
-        log(f"copy skills {src} -> {dst}")
+        log_action(f"copy skills {src} -> {dst}", dry_run)
         if not dry_run:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(src, dst, ignore=ignore)
         return
-    log(f"symlink {dst} -> {src}")
+    log_action(f"symlink {dst} -> {src}", dry_run)
     if dry_run:
         return
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -122,4 +126,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
