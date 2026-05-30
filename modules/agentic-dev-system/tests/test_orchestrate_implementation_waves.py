@@ -436,6 +436,80 @@ print('https://github.com/example/repo/pull/123')
             self.assertEqual(result.returncode, 2)
             self.assertIn("--allow-pr requires --allow-codex", result.stderr + result.stdout)
 
+    def test_resume_allow_merge_uses_existing_pr_ready_task(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            add_bare_origin(td, repo)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            bin_dir = Path(td) / "bin"
+            bin_dir.mkdir()
+            fail_bin_dir = Path(td) / "fail-bin"
+            fail_bin_dir.mkdir()
+            codex = fake_codex_bin(bin_dir, """
+import pathlib
+pathlib.Path('src').mkdir(exist_ok=True)
+pathlib.Path('src/task-001.py').write_text('implemented\\n', encoding='utf-8')
+""")
+            gh = fake_gh_bin(bin_dir, """
+import sys
+if sys.argv[1:3] == ['pr', 'create']:
+    print('https://github.com/example/repo/pull/123')
+""")
+            failing_codex = fake_codex_bin(fail_bin_dir, "import sys\nsys.exit(99)")
+            merge_log = Path(td) / "merge-gate.log"
+            merge_gate = fake_merge_gate(Path(td) / "merge_gate.py", merge_log)
+            item = task("TASK-001", 1, "feature/task-001-core-flow")
+            item["verification_commands"] = ["python3 -c \"from pathlib import Path; assert Path('src/task-001.py').exists()\""]
+            write_plan(plan, [item])
+
+            first = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--allow-pr",
+                "--codex-bin",
+                str(codex),
+                "--gh-bin",
+                str(gh),
+            ], cwd=repo)
+            resumed = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--allow-pr",
+                "--allow-merge",
+                "--merge-gate-script",
+                str(merge_gate),
+                "--codex-bin",
+                str(failing_codex),
+                "--gh-bin",
+                str(gh),
+                "--resume",
+                "--reuse-worktrees",
+            ], cwd=repo)
+
+            self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
+            self.assertIn("--pr 123", merge_log.read_text())
+            state = json.loads((run_dir / "run-state.json").read_text())
+            self.assertEqual(state["tasks"]["TASK-001"]["status"], "merged")
+
     def test_allow_review_request_comments_on_created_pr(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)

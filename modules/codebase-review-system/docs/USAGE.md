@@ -109,7 +109,7 @@ python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py 
   --reuse-worktrees
 ```
 
-Resume mode verifies the saved repo, plan path/hash, selected waves, and dry-run mode before skipping already prepared tasks and retrying failed or missing tasks. Reported resume commands preserve saved Codex, PR, review-request, and merge flags from the original run.
+Resume mode verifies the saved repo, plan path/hash, selected waves, and dry-run mode before skipping already prepared tasks and retrying failed or missing tasks. If a task is already `pr_ready` and the resumed command adds `--allow-merge`, the executor runs the merge gate against the saved PR instead of re-running Codex. Reported resume commands preserve saved Codex, PR, review-request, and merge flags from the original run.
 Use repeatable `--task TASK-ID` with `--wave` to prepare only selected tasks from a wave, preserving plan validation and wave order.
 
 Aggregate historical implementation-wave runs:

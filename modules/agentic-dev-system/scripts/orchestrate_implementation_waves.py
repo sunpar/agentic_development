@@ -757,6 +757,54 @@ def main():
             if args.resume and previous.get("status") in complete_statuses:
                 print(f"RESUME: skipping {task_id} status {previous.get('status')}")
                 continue
+            if args.resume and merge_enabled and previous.get("status") == "pr_ready":
+                prompt_path = previous.get("prompt_path")
+                state["tasks"][task_id] = previous
+                try:
+                    worktree_path = Path(previous["worktree"])
+                    task_dir = run_dir / "tasks" / task_id
+                    task_dir.mkdir(parents=True, exist_ok=True)
+                    pr = {
+                        "url": previous.get("pr_url"),
+                        "number": previous.get("pr_number"),
+                    }
+                    if args.allow_review_request and not previous.get("review_requests"):
+                        requests = request_review_comments(args, worktree_path, pr, review_agents(args.review_agents))
+                        state["tasks"][task_id].update({
+                            "review_requested_at": now_utc(),
+                            "review_requests": requests,
+                            "completed_at": now_utc(),
+                        })
+                        checkpoint_state(run_dir, state)
+                    merge = run_merge_gate(
+                        args,
+                        worktree_path,
+                        task_dir,
+                        pr,
+                        previous.get("commit_sha"),
+                        state["tasks"][task_id].get("review_requested_at") if args.allow_review_request else None,
+                    )
+                    state["tasks"][task_id]["merge"] = merge
+                    checkpoint_state(run_dir, state)
+                    if merge["returncode"]:
+                        raise RuntimeError(f"merge gate exited {merge['returncode']}")
+                    state["tasks"][task_id].update({
+                        "status": "merged",
+                        "merged_at": now_utc(),
+                        "completed_at": now_utc(),
+                    })
+                    checkpoint_state(run_dir, state)
+                    print(f"RESUME: merged {task_id} existing PR {pr.get('number') or pr.get('url')}")
+                    continue
+                except Exception as exc:
+                    state["tasks"][task_id].update({
+                        "status": "failed",
+                        "prompt_path": prompt_path,
+                        "error": str(exc),
+                        "completed_at": now_utc(),
+                    })
+                    checkpoint_state(run_dir, state)
+                    raise
             prompt_path = None
             planned_worktree = worktree_dir / sanitize_worktree_name(branch)
             state["tasks"][task_id] = {
