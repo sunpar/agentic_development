@@ -106,6 +106,14 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
                     "tasks": 2,
                     "by_status": {"planned": 1, "failed": 1},
                 },
+                "waves": [
+                    {
+                        "wave": 1,
+                        "status": "failed",
+                        "task_ids": ["TASK-001", "TASK-002"],
+                        "error": "TASK-002: branch already exists",
+                    },
+                ],
                 "tasks": [
                     {
                         "id": "TASK-001",
@@ -129,6 +137,14 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
                 "dry_run": True,
                 "selected_waves": [1],
                 "selected_task_ids": ["TASK-001", "TASK-002"],
+                "waves": {
+                    "1": {
+                        "wave": 1,
+                        "status": "failed",
+                        "task_ids": ["TASK-001", "TASK-002"],
+                        "error": "TASK-002: branch already exists",
+                    },
+                },
                 "tasks": {
                     "TASK-001": {
                         "status": "planned",
@@ -151,6 +167,13 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
                 "dry_run": False,
                 "selected_waves": [2],
                 "selected_task_ids": ["TASK-003", "TASK-004"],
+                "waves": {
+                    "2": {
+                        "wave": 2,
+                        "status": "succeeded",
+                        "task_ids": ["TASK-003", "TASK-004"],
+                    },
+                },
                 "execution_options": {
                     "allow_codex": True,
                     "allow_pr": True,
@@ -215,10 +238,13 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertEqual(aggregate["totals"]["prs"], 1)
         self.assertEqual(aggregate["totals"]["review_requests"], 2)
         self.assertEqual(aggregate["totals"]["merged_tasks"], 1)
+        self.assertEqual(aggregate["totals"]["failed_waves"], 1)
         self.assertEqual(aggregate["totals"]["by_status"]["planned"], 1)
         self.assertEqual(aggregate["totals"]["by_status"]["merged"], 1)
         self.assertEqual(aggregate["totals"]["by_status"]["failed"], 1)
         self.assertEqual(aggregate["totals"]["by_status"]["error"], 1)
+        self.assertEqual(aggregate["runs"][0]["failed_waves"], [1])
+        self.assertEqual(aggregate["runs"][1]["waves"][0]["status"], "succeeded")
         self.assertEqual(aggregate["runs"][0]["failed_tasks"], ["TASK-002"])
         self.assertEqual(aggregate["runs"][1]["failed_tasks"], ["TASK-004"])
         self.assertEqual(aggregate["runs"][1]["branches"], ["feature/task-003", "feature/task-004"])
@@ -251,6 +277,7 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertIn("# Implementation Wave Run Report", markdown)
         self.assertIn("repo-20260529T120000Z", markdown)
         self.assertIn("failed=TASK-002", markdown)
+        self.assertIn("failed_waves=1", markdown)
         self.assertIn("PRs=#123", markdown)
         self.assertIn("review_requests=2", markdown)
         self.assertIn("merged=1", markdown)
