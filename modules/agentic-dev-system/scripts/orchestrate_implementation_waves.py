@@ -508,6 +508,7 @@ def write_summary(run_dir, state):
         "implementation_plan": state.get("implementation_plan"),
         "implementation_plan_sha256": state.get("implementation_plan_sha256"),
         "dry_run": state.get("dry_run"),
+        "execution_options": state.get("execution_options", {}),
         "selected_waves": state.get("selected_waves", []),
         "selected_task_ids": state.get("selected_task_ids", []),
         "totals": {
@@ -565,7 +566,7 @@ def checkpoint_state(run_dir, state):
     write_summary(run_dir, state)
 
 
-def validate_resume_state(state, repo, plan_path, plan_hash, selected_wave_numbers, selected_task_ids, dry_run):
+def validate_resume_state(state, repo, plan_path, plan_hash, selected_wave_numbers, selected_task_ids, dry_run, execution_opts):
     if state.get("repo") and Path(state["repo"]).resolve() != repo:
         raise RuntimeError(f"run-state repo mismatch: expected {repo}, got {state.get('repo')}")
     if state.get("implementation_plan") and Path(state["implementation_plan"]).resolve() != plan_path:
@@ -578,12 +579,13 @@ def validate_resume_state(state, repo, plan_path, plan_hash, selected_wave_numbe
         raise RuntimeError("run-state selected tasks mismatch")
     if bool(state.get("dry_run")) != bool(dry_run):
         raise RuntimeError("run-state dry-run mode mismatch")
+    state.setdefault("execution_options", execution_opts)
     state.setdefault("selected_task_ids", selected_task_ids)
     state.setdefault("tasks", {})
     return state
 
 
-def load_or_initialize_state(run_dir, repo, plan_path, plan_hash, selected_wave_numbers, selected_task_ids, dry_run, resume):
+def load_or_initialize_state(run_dir, repo, plan_path, plan_hash, selected_wave_numbers, selected_task_ids, dry_run, execution_opts, resume):
     state_path = run_dir / "run-state.json"
     if resume:
         if not state_path.exists():
@@ -596,11 +598,12 @@ def load_or_initialize_state(run_dir, repo, plan_path, plan_hash, selected_wave_
             selected_wave_numbers,
             selected_task_ids,
             dry_run,
+            execution_opts,
         )
-    return initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, selected_task_ids, dry_run)
+    return initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, selected_task_ids, dry_run, execution_opts)
 
 
-def initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, selected_task_ids, dry_run):
+def initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, selected_task_ids, dry_run, execution_opts):
     return {
         "created_at": now_utc(),
         "repo": str(repo),
@@ -610,7 +613,21 @@ def initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, se
         "selected_waves": selected_wave_numbers,
         "selected_task_ids": selected_task_ids,
         "dry_run": dry_run,
+        "execution_options": execution_opts,
         "tasks": {},
+    }
+
+
+def execution_options(args, merge_enabled):
+    return {
+        "allow_codex": bool(args.allow_codex),
+        "allow_pr": bool(args.allow_pr),
+        "allow_review_request": bool(args.allow_review_request),
+        "review_agents": args.review_agents,
+        "allow_merge": bool(merge_enabled),
+        "no_merge": bool(args.no_merge),
+        "merge_method": args.merge_method,
+        "delete_branch": bool(args.delete_branch),
     }
 
 
@@ -708,6 +725,7 @@ def main():
         run_dir = run_dir.resolve()
         worktree_dir = Path(args.worktree_dir).expanduser().resolve()
         plan_hash = file_sha256(plan_path)
+        execution_opts = execution_options(args, merge_enabled)
         state = load_or_initialize_state(
             run_dir,
             repo,
@@ -716,6 +734,7 @@ def main():
             selected_wave_numbers,
             selected_task_ids,
             args.dry_run,
+            execution_opts,
             args.resume,
         )
         run_dir.mkdir(parents=True, exist_ok=True)

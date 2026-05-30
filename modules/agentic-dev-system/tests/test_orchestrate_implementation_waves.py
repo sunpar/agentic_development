@@ -327,6 +327,44 @@ pathlib.Path({str(marker)!r}).write_text('ran', encoding='utf-8')
             state = json.loads((run_dir / "run-state.json").read_text())
             self.assertEqual(state["tasks"]["TASK-001"]["status"], "planned")
 
+    def test_run_state_records_execution_options(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            write_plan(plan, [task("TASK-001", 1, "feature/task-001-core-flow")])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--dry-run",
+                "--allow-codex",
+                "--allow-pr",
+                "--allow-review-request",
+                "--review-agents",
+                "codex,copilot",
+                "--allow-merge",
+                "--merge-method",
+                "rebase",
+                "--delete-branch",
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            self.assertEqual(state["execution_options"], {
+                "allow_codex": True,
+                "allow_pr": True,
+                "allow_review_request": True,
+                "review_agents": "codex,copilot",
+                "allow_merge": True,
+                "no_merge": False,
+                "merge_method": "rebase",
+                "delete_branch": True,
+            })
+
     def test_allow_pr_commits_pushes_and_creates_pr_after_codex(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)

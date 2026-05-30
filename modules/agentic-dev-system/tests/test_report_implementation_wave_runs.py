@@ -85,6 +85,15 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
                 "dry_run": False,
                 "selected_waves": [2],
                 "selected_task_ids": ["TASK-003", "TASK-004"],
+                "execution_options": {
+                    "allow_codex": True,
+                    "allow_pr": True,
+                    "allow_review_request": True,
+                    "review_agents": "codex,copilot",
+                    "allow_merge": True,
+                    "merge_method": "squash",
+                    "delete_branch": True,
+                },
                 "tasks": {
                     "TASK-003": {
                         "status": "merged",
@@ -167,6 +176,9 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertIn("--wave 2", resume)
         self.assertIn("--task TASK-004", resume)
         self.assertIn("--worktree-dir /tmp/worktrees", resume)
+        self.assertIn("--allow-codex --allow-pr", resume)
+        self.assertIn("--allow-review-request --review-agents codex,copilot", resume)
+        self.assertIn("--allow-merge --merge-method squash --delete-branch", resume)
         self.assertIn("--resume --reuse-worktrees", resume)
         self.assertIn("# Implementation Wave Run Report", markdown)
         self.assertIn("repo-20260529T120000Z", markdown)
