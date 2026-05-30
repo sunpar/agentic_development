@@ -42,6 +42,13 @@ def make_repo(td):
     return repo
 
 
+def fake_codex_bin(bin_dir, body):
+    path = Path(bin_dir) / "codex"
+    path.write_text("#!/usr/bin/env python3\n" + body.strip() + "\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
 def task(task_id, wave, branch=None, deps=None):
     return {
         "id": task_id,
@@ -162,6 +169,132 @@ class ImplementationWaveExecutorTests(unittest.TestCase):
             self.assertEqual(summary["totals"]["by_status"]["worktree_ready"], 1)
             self.assertEqual(summary["tasks"][0]["wave"], 1)
             self.assertFalse((repo / "run-summary.json").exists())
+
+    def test_allow_codex_runs_task_prompt_and_verification(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            bin_dir = Path(td) / "bin"
+            bin_dir.mkdir()
+            codex = fake_codex_bin(bin_dir, """
+import pathlib
+import sys
+pathlib.Path('codex-args.log').write_text(' '.join(sys.argv[1:]), encoding='utf-8')
+pathlib.Path('src').mkdir(exist_ok=True)
+pathlib.Path('src/task-001.py').write_text('implemented\\n', encoding='utf-8')
+print('codex completed task')
+""")
+            item = task("TASK-001", 1, "feature/task-001-core-flow")
+            item["verification_commands"] = ["python3 -c \"from pathlib import Path; assert Path('src/task-001.py').exists()\""]
+            write_plan(plan, [item])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--codex-bin",
+                str(codex),
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            worktree = worktrees / "feature-task-001-core-flow"
+            self.assertTrue((worktree / "src" / "task-001.py").exists())
+            self.assertIn("exec", (worktree / "codex-args.log").read_text())
+            state = json.loads((run_dir / "run-state.json").read_text())
+            task_state = state["tasks"]["TASK-001"]
+            self.assertEqual(task_state["status"], "implemented")
+            self.assertEqual(task_state["codex"]["returncode"], 0)
+            self.assertEqual(task_state["verification"][0]["returncode"], 0)
+            self.assertIn("src/task-001.py", task_state["changed_files"])
+            task_dir = run_dir / "tasks" / "TASK-001"
+            self.assertIn("codex completed task", (task_dir / "codex.stdout.log").read_text())
+            summary = json.loads((run_dir / "run-summary.json").read_text())
+            self.assertEqual(summary["totals"]["by_status"]["implemented"], 1)
+            self.assertEqual(summary["tasks"][0]["codex"]["returncode"], 0)
+
+    def test_allow_codex_failure_records_failed_task(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            bin_dir = Path(td) / "bin"
+            bin_dir.mkdir()
+            codex = fake_codex_bin(bin_dir, """
+import sys
+print('codex failed task', file=sys.stderr)
+raise SystemExit(7)
+""")
+            write_plan(plan, [task("TASK-001", 1, "feature/task-001-core-flow")])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--codex-bin",
+                str(codex),
+            ], cwd=repo)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("codex exited 7", result.stderr + result.stdout)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            task_state = state["tasks"]["TASK-001"]
+            self.assertEqual(task_state["status"], "failed")
+            self.assertEqual(task_state["codex"]["returncode"], 7)
+            self.assertIn("codex exited 7", task_state["error"])
+            self.assertIn("codex failed task", (run_dir / "tasks" / "TASK-001" / "codex.stderr.log").read_text())
+
+    def test_dry_run_with_allow_codex_does_not_execute_codex(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            marker = Path(td) / "codex-ran"
+            bin_dir = Path(td) / "bin"
+            bin_dir.mkdir()
+            codex = fake_codex_bin(bin_dir, f"""
+import pathlib
+pathlib.Path({str(marker)!r}).write_text('ran', encoding='utf-8')
+""")
+            write_plan(plan, [task("TASK-001", 1, "feature/task-001-core-flow")])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--dry-run",
+                "--allow-codex",
+                "--codex-bin",
+                str(codex),
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("DRY-RUN: would run codex for TASK-001", result.stdout)
+            self.assertFalse(marker.exists())
+            self.assertFalse(worktrees.exists())
+            state = json.loads((run_dir / "run-state.json").read_text())
+            self.assertEqual(state["tasks"]["TASK-001"]["status"], "planned")
 
     def test_wave_option_limits_prepared_tasks(self):
         with tempfile.TemporaryDirectory() as td:
