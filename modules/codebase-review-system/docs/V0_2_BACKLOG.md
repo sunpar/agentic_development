@@ -18,7 +18,8 @@ The current codebase-intelligence module is a v0.1 scaffold. These items are int
 - Implemented targeted implementation-wave preparation with repeatable `--task TASK-ID` filtering inside the selected wave.
 - Implemented in `report_implementation_wave_runs.py`: aggregate reporting across multiple historical implementation-wave runs, including dry-run counts, selected waves, task status totals, failed tasks, branches, worktrees, prompt paths, PR numbers, review-request counts, and failed-task resume commands from `run-summary.json` plus `run-state.json` metadata or from `run-state.json` alone.
 - Implemented dry-run-safe cleanup/listing in `orchestrate_implementation_waves.py` for old implementation run directories and task worktrees, with actual removal gated by `--confirm-cleanup`.
-- Remaining follow-up: add opt-in merge-gate automation for implementation-wave task branches after task PR and review-request automation has been dogfooded.
+- Implemented opt-in merge-gate automation in `orchestrate_implementation_waves.py` with `--allow-merge`, shared `merge_gate.py` invocation, merge stdout/stderr logs, merged status, and `--no-merge` override.
+- Remaining follow-up: dogfood implementation-wave Codex/PR/review/merge automation on a real multi-task feature and add bounded review-repair parity only if the simpler task-PR loop needs it.
 
 ## Real Wave Orchestration
 

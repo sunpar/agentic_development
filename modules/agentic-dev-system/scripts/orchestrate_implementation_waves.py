@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare implementation task waves without running Codex or PR automation."""
+"""Prepare and optionally execute implementation task waves."""
 from __future__ import annotations
 
 import argparse
@@ -21,6 +21,13 @@ if str(SCRIPT_DIR) not in sys.path:
 from validate_plan import validate_plan  # noqa: E402
 
 MODEL_ARGS = ["--model", "gpt-5.3-codex-spark", "-c", 'model_reasoning_effort="xhigh"']
+
+
+def default_merge_gate_script():
+    source_copy = SCRIPT_DIR.parent.parent / "codebase-review-system" / "scripts" / "merge_gate.py"
+    if source_copy.exists():
+        return source_copy
+    return Path.home() / ".codex" / "codebase-review-factory" / "scripts" / "merge_gate.py"
 
 
 def now_utc():
@@ -402,6 +409,48 @@ def request_review_comments(args, worktree, pr, agents):
     return records
 
 
+def run_merge_gate(args, worktree, task_dir, pr, expected_head_sha, require_review_after=None):
+    pr_target = pr.get("number") or pr.get("url")
+    if not pr_target:
+        raise RuntimeError("created PR has no number or URL for merge gate")
+    cmd = [
+        sys.executable,
+        str(Path(args.merge_gate_script).expanduser()),
+        "--pr",
+        str(pr_target),
+        "--repo-path",
+        str(worktree),
+        "--allow-merge",
+        "--merge-method",
+        args.merge_method,
+        "--expected-head-sha",
+        expected_head_sha or "",
+        "--ci-timeout-seconds",
+        str(args.ci_timeout_seconds),
+        "--ci-poll-seconds",
+        str(args.ci_poll_seconds),
+        "--review-timeout-seconds",
+        str(args.review_timeout_seconds),
+        "--review-thread-timeout-seconds",
+        str(args.review_thread_timeout_seconds),
+    ]
+    if require_review_after:
+        cmd += ["--require-review-after", require_review_after]
+    if args.delete_branch:
+        cmd.append("--delete-branch")
+    result = run_cmd(cmd)
+    stdout_log = task_dir / "merge.stdout.log"
+    stderr_log = task_dir / "merge.stderr.log"
+    stdout_log.write_text(result.stdout, encoding="utf-8")
+    stderr_log.write_text(result.stderr, encoding="utf-8")
+    return {
+        "command": cmd,
+        "returncode": result.returncode,
+        "stdout_log": str(stdout_log),
+        "stderr_log": str(stderr_log),
+    }
+
+
 def write_task_artifacts(run_dir, plan_path, task):
     task_dir = run_dir / "tasks" / task["id"]
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -481,6 +530,8 @@ def write_summary(run_dir, state):
                 "pr_number": item.get("pr_number"),
                 "review_requested_at": item.get("review_requested_at"),
                 "review_requests": item.get("review_requests"),
+                "merge": item.get("merge"),
+                "merged_at": item.get("merged_at"),
                 "error": item.get("error"),
             }
             for task_id, item in sorted(tasks.items())
@@ -573,7 +624,7 @@ def validate_or_raise(plan):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Prepare implementation task waves.")
+    parser = argparse.ArgumentParser(description="Prepare and optionally execute implementation task waves.")
     parser.add_argument("implementation_plan", nargs="?")
     parser.add_argument("--wave", type=int)
     parser.add_argument("--task", action="append", dest="task_ids", help="Prepare only the named task ID. May be repeated.")
@@ -594,6 +645,15 @@ def parse_args():
     parser.add_argument("--pr-base")
     parser.add_argument("--allow-review-request", action="store_true", help="After creating a PR, comment to request configured review agents.")
     parser.add_argument("--review-agents", default="codex")
+    parser.add_argument("--allow-merge", action="store_true", help="After PR creation and optional review request, run the shared merge gate with merging enabled.")
+    parser.add_argument("--no-merge", action="store_true", help="Disable merge even when --allow-merge is also provided.")
+    parser.add_argument("--merge-gate-script", default=str(default_merge_gate_script()))
+    parser.add_argument("--merge-method", choices=["squash", "merge", "rebase"], default="squash")
+    parser.add_argument("--delete-branch", action="store_true")
+    parser.add_argument("--ci-timeout-seconds", type=int, default=600)
+    parser.add_argument("--ci-poll-seconds", type=int, default=15)
+    parser.add_argument("--review-timeout-seconds", type=int, default=600)
+    parser.add_argument("--review-thread-timeout-seconds", type=int, default=0)
     parser.add_argument("--cleanup-artifacts", action="store_true", help="List or remove old run directories and task worktrees.")
     parser.add_argument("--cleanup-older-than-days", type=int, default=30)
     parser.add_argument("--confirm-cleanup", action="store_true", help="Required to remove artifacts when --cleanup-artifacts is used without --dry-run.")
@@ -615,6 +675,22 @@ def main():
         return 2
     if args.allow_review_request and not args.allow_pr:
         print("--allow-review-request requires --allow-pr", file=sys.stderr)
+        return 2
+    merge_enabled = args.allow_merge and not args.no_merge
+    if merge_enabled and not args.allow_pr:
+        print("--allow-merge requires --allow-pr", file=sys.stderr)
+        return 2
+    if args.ci_timeout_seconds < 0:
+        print("--ci-timeout-seconds must be zero or greater", file=sys.stderr)
+        return 2
+    if args.ci_poll_seconds < 0:
+        print("--ci-poll-seconds must be zero or greater", file=sys.stderr)
+        return 2
+    if args.review_timeout_seconds < 0:
+        print("--review-timeout-seconds must be zero or greater", file=sys.stderr)
+        return 2
+    if args.review_thread_timeout_seconds < 0:
+        print("--review-thread-timeout-seconds must be zero or greater", file=sys.stderr)
         return 2
     plan_path = Path(args.implementation_plan).resolve()
     try:
@@ -651,7 +727,12 @@ def main():
             task_id = task["id"]
             previous = state.get("tasks", {}).get(task_id) or {}
             if args.allow_codex and not args.dry_run:
-                complete_statuses = {"implemented"}
+                if merge_enabled:
+                    complete_statuses = {"merged", "no_changes"}
+                elif args.allow_pr:
+                    complete_statuses = {"pr_ready", "no_changes"}
+                else:
+                    complete_statuses = {"implemented"}
             else:
                 complete_statuses = {"planned"} if args.dry_run else {"worktree_ready"}
             if args.resume and previous.get("status") in complete_statuses:
@@ -733,6 +814,25 @@ def main():
                                 state["tasks"][task_id].update({
                                     "review_requested_at": now_utc(),
                                     "review_requests": requests,
+                                    "completed_at": now_utc(),
+                                })
+                                checkpoint_state(run_dir, state)
+                            if merge_enabled:
+                                merge = run_merge_gate(
+                                    args,
+                                    worktree_path,
+                                    task_dir,
+                                    pr,
+                                    commit_sha,
+                                    state["tasks"][task_id].get("review_requested_at") if args.allow_review_request else None,
+                                )
+                                state["tasks"][task_id]["merge"] = merge
+                                checkpoint_state(run_dir, state)
+                                if merge["returncode"]:
+                                    raise RuntimeError(f"merge gate exited {merge['returncode']}")
+                                state["tasks"][task_id].update({
+                                    "status": "merged",
+                                    "merged_at": now_utc(),
                                     "completed_at": now_utc(),
                                 })
                                 checkpoint_state(run_dir, state)
