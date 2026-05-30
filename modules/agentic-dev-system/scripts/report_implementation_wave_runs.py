@@ -54,6 +54,8 @@ def summary_from_state(run_dir):
             "pr_number": item.get("pr_number"),
             "pr_url": item.get("pr_url"),
             "review_requests": item.get("review_requests"),
+            "merge": item.get("merge"),
+            "merged_at": item.get("merged_at"),
             "error": item.get("error"),
         }
         for task_id, item in sorted_task_items(state.get("tasks"))
@@ -100,7 +102,18 @@ def merge_task_details(summary_tasks, state_tasks):
     state_by_id = task_by_id(state_tasks)
     merged = []
     seen = set()
-    detail_keys = ("wave", "branch", "worktree", "prompt_path", "pr_number", "pr_url", "review_requests", "error")
+    detail_keys = (
+        "wave",
+        "branch",
+        "worktree",
+        "prompt_path",
+        "pr_number",
+        "pr_url",
+        "review_requests",
+        "merge",
+        "merged_at",
+        "error",
+    )
     for item in summary_tasks:
         task_id = str(item.get("id") or "")
         seen.add(task_id)
@@ -182,6 +195,20 @@ def review_request_count(tasks):
     return total
 
 
+def merged_task_count(tasks):
+    return sum(1 for item in tasks if str(item.get("status") or "") == "merged")
+
+
+def merge_log_paths(tasks):
+    paths = []
+    for item in tasks:
+        merge = item.get("merge")
+        if not isinstance(merge, dict):
+            continue
+        paths.extend([merge.get("stderr_log"), merge.get("stdout_log")])
+    return unique_sorted(paths)
+
+
 def load_run_summary(run_dir):
     summary_path = run_dir / "run-summary.json"
     state_path = run_dir / "run-state.json"
@@ -206,6 +233,7 @@ def load_run_summary(run_dir):
     selected_waves = list(summary.get("selected_waves") or [])
     prs = pr_numbers(tasks)
     reviews = review_request_count(tasks)
+    merges = merged_task_count(tasks)
     return {
         "name": run_dir.name,
         "run_dir": str(run_dir),
@@ -227,6 +255,8 @@ def load_run_summary(run_dir):
         "prompt_paths": unique_sorted(item.get("prompt_path") for item in tasks),
         "pr_numbers": prs,
         "review_request_count": reviews,
+        "merged_tasks": merges,
+        "merge_log_paths": merge_log_paths(tasks),
         "resume_commands": resume_commands(summary, failed_tasks, tasks),
     }
 
@@ -254,6 +284,7 @@ def aggregate_runs(runs_root):
             "tasks": sum(run["totals"]["tasks"] for run in runs),
             "prs": sum(len(run["pr_numbers"]) for run in runs),
             "review_requests": sum(run["review_request_count"] for run in runs),
+            "merged_tasks": sum(run["merged_tasks"] for run in runs),
             "by_status": by_status,
         },
         "runs": runs,
@@ -276,6 +307,7 @@ def write_markdown(path, aggregate):
         f"- Tasks: {aggregate['totals']['tasks']}",
         f"- PRs: {aggregate['totals']['prs']}",
         f"- Review requests: {aggregate['totals']['review_requests']}",
+        f"- Merged tasks: {aggregate['totals']['merged_tasks']}",
     ]
     for status, count in sorted(aggregate["totals"]["by_status"].items()):
         lines.append(f"- {status}: {count}")
@@ -297,6 +329,8 @@ def write_markdown(path, aggregate):
             line += "; PRs=" + ", ".join(f"#{number}" for number in run["pr_numbers"])
         if run["review_request_count"]:
             line += f"; review_requests={run['review_request_count']}"
+        if run["merged_tasks"]:
+            line += f"; merged={run['merged_tasks']}"
         lines.append(line)
         for command in run.get("resume_commands") or []:
             lines.append(f"  - Resume: `{command}`")
