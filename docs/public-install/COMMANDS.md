@@ -62,6 +62,8 @@ python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py 
   --cleanup-older-than-days 30
 ```
 
+The Markdown report lists exact resume commands for failed tasks when run state includes the implementation plan, selected wave, task id, and worktree root.
+
 ## End-To-End Wrapper
 
 Dry-run:
