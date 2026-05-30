@@ -44,6 +44,7 @@ RISKY_PARALLEL_PATTERNS = [
     '**/generated/**',
     '**/config*',
 ]
+WORKTREE_CREATE_LOCK = threading.Lock()
 
 
 def now_utc() -> str:
@@ -1305,18 +1306,19 @@ def run_slice(slice_item, args, repo, worktree_dir, base_ref, run_dir, plan_copy
         write_json(run_dir / 'run-state.json', state)
 
     try:
-        worktree, resumed_dirty, reset_info = create_or_reuse_worktree(
-            repo,
-            worktree_dir,
-            branch,
-            base_ref,
-            args.reuse_worktrees,
-            allowed=slice_item.get('files_allowed_to_edit', []),
-            allow_scoped_dirty=allow_dirty_resume,
-            slice_id=sid,
-            slice_dir=slice_dir,
-            reset_stale_clean=allow_stale_clean_reset,
-        )
+        with WORKTREE_CREATE_LOCK:
+            worktree, resumed_dirty, reset_info = create_or_reuse_worktree(
+                repo,
+                worktree_dir,
+                branch,
+                base_ref,
+                args.reuse_worktrees,
+                allowed=slice_item.get('files_allowed_to_edit', []),
+                allow_scoped_dirty=allow_dirty_resume,
+                slice_id=sid,
+                slice_dir=slice_dir,
+                reset_stale_clean=allow_stale_clean_reset,
+            )
         base_sha = run_cmd(['git', 'rev-parse', 'HEAD'], cwd=worktree).stdout.strip()
         setup = setup_results(args.setup_command, worktree)
         write_json(slice_dir / 'setup.json', setup)
