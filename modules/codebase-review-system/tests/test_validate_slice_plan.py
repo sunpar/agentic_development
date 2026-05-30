@@ -30,6 +30,22 @@ class TestSlicePlan(unittest.TestCase):
         data['waves'][0]['integration_order'] = ['SLICE-001', 'SLICE-002']
         self.assertInvalid(data, 'same-wave edit conflict')
 
+    def test_rejects_duplicate_slice_branches(self):
+        data = json.loads((ROOT/'fixtures/sample_slice_plan.valid.json').read_text())
+        second = dict(data['slices'][0])
+        second['id'] = 'SLICE-002'
+        data['slices'].append(second)
+        data['waves'][0]['slice_ids'] = ['SLICE-001', 'SLICE-002']
+        data['waves'][0]['integration_order'] = ['SLICE-001', 'SLICE-002']
+
+        self.assertInvalid(data, 'duplicate slice branch')
+
+    def test_rejects_protected_slice_branch_names(self):
+        data = json.loads((ROOT/'fixtures/sample_slice_plan.valid.json').read_text())
+        data['slices'][0]['branch'] = 'main'
+
+        self.assertInvalid(data, 'protected branch name')
+
     def test_rejects_empty_context_and_test_plans(self):
         data = json.loads((ROOT/'fixtures/sample_slice_plan.valid.json').read_text())
         data['slices'][0]['files_to_read'] = []

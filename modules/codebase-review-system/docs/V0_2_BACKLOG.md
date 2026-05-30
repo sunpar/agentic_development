@@ -35,7 +35,7 @@ The current codebase-intelligence module is a v0.1 scaffold. These items are int
 
 ## Schemas And Validators
 
-- Implemented in `validate_slice_plan.py`: required fields, list-shaped fields, unsafe path checks, slice type and risk enums, branch safety, positive expected PR size fields, dependency cycle detection, unknown dependency and parallel-conflict references, wave membership, dependency wave ordering, same-wave edit conflicts, and declared same-wave parallel conflicts.
+- Implemented in `validate_slice_plan.py`: required fields, list-shaped fields, unsafe path checks, slice type and risk enums, branch syntax, duplicate/protected branch rejection, positive expected PR size fields, dependency cycle detection, unknown dependency and parallel-conflict references, wave membership, dependency wave ordering, same-wave edit conflicts, and declared same-wave parallel conflicts.
 - Implemented tighter `feature_model` and `slice_plan` JSON Schemas with stricter ID and branch-name patterns, enum constraints, positive expected PR size fields, and nonempty arrays where execution needs concrete context.
 - Implemented validator checks for nonempty slice context and test plans beyond `files_allowed_to_edit` and `verification_commands`.
 
