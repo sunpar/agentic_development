@@ -198,6 +198,8 @@ class ImplementationWaveExecutorTests(unittest.TestCase):
             self.assertEqual(summary["selected_task_ids"], ["TASK-001"])
             self.assertEqual(summary["totals"]["tasks"], 1)
             self.assertEqual(summary["totals"]["by_status"]["worktree_ready"], 1)
+            self.assertEqual(summary["waves"][0]["status"], "succeeded")
+            self.assertEqual(summary["waves"][0]["task_ids"], ["TASK-001"])
             self.assertEqual(summary["tasks"][0]["wave"], 1)
             self.assertFalse((repo / "run-summary.json").exists())
 
@@ -973,6 +975,7 @@ if sys.argv[1:3] == ['pr', 'create']:
             write_plan(plan, [
                 task("TASK-001", 1, "feature/task-001"),
                 task("TASK-002", 1, "feature/task-002"),
+                task("TASK-003", 2, "feature/task-003", deps=["TASK-001"]),
             ])
             git(repo, "branch", "feature/task-002", "HEAD")
 
@@ -996,6 +999,11 @@ if sys.argv[1:3] == ['pr', 'create']:
             self.assertEqual(state["tasks"]["TASK-001"]["status"], "worktree_ready")
             self.assertEqual(state["tasks"]["TASK-002"]["status"], "failed")
             self.assertIn("branch already exists", state["tasks"]["TASK-002"]["error"])
+            self.assertEqual(state["waves"]["1"]["status"], "failed")
+            self.assertEqual(state["waves"]["1"]["task_ids"], ["TASK-001", "TASK-002"])
+            self.assertNotIn("2", state["waves"])
+            self.assertNotIn("TASK-003", state["tasks"])
+            self.assertEqual(summary["waves"][0]["status"], "failed")
             self.assertEqual(summary["totals"]["by_status"]["worktree_ready"], 1)
             self.assertEqual(summary["totals"]["by_status"]["failed"], 1)
             self.assertIn("branch already exists", summary["tasks"][1]["error"])
