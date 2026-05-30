@@ -66,6 +66,7 @@ def summary_from_state(run_dir):
         "run_dir": state.get("run_dir") or str(run_dir),
         "implementation_plan": state.get("implementation_plan"),
         "dry_run": bool(state.get("dry_run")),
+        "execution_options": dict(state.get("execution_options") or {}),
         "selected_waves": list(state.get("selected_waves") or []),
         "selected_task_ids": list(state.get("selected_task_ids") or []),
         "totals": {
@@ -126,7 +127,7 @@ def merge_task_details(summary_tasks, state_tasks):
 
 def enrich_summary_from_state(summary, state_summary):
     enriched = dict(summary)
-    for key in ("implementation_plan", "selected_task_ids", "selected_waves", "repo", "run_dir"):
+    for key in ("implementation_plan", "selected_task_ids", "selected_waves", "repo", "run_dir", "execution_options"):
         if enriched.get(key) in (None, "", []):
             value = state_summary.get(key)
             if value not in (None, "", []):
@@ -147,6 +148,28 @@ def common_worktree_dir(tasks):
 
 def shell_join(parts):
     return " ".join(shlex.quote(str(part)) for part in parts if part is not None and str(part) != "")
+
+
+def execution_resume_args(summary):
+    options = summary.get("execution_options") or {}
+    args = []
+    if options.get("allow_codex"):
+        args.append("--allow-codex")
+    if options.get("allow_pr"):
+        args.append("--allow-pr")
+    if options.get("allow_review_request"):
+        args.append("--allow-review-request")
+        if options.get("review_agents"):
+            args += ["--review-agents", options.get("review_agents")]
+    if options.get("allow_merge"):
+        args.append("--allow-merge")
+        if options.get("merge_method"):
+            args += ["--merge-method", options.get("merge_method")]
+        if options.get("delete_branch"):
+            args.append("--delete-branch")
+    if options.get("no_merge"):
+        args.append("--no-merge")
+    return args
 
 
 def resume_commands(summary, failed_tasks, tasks):
@@ -173,6 +196,7 @@ def resume_commands(summary, failed_tasks, tasks):
             cmd += ["--worktree-dir", worktree_dir]
         if summary.get("dry_run"):
             cmd.append("--dry-run")
+        cmd += execution_resume_args(summary)
         cmd += ["--resume", "--reuse-worktrees"]
         commands.append(shell_join(cmd))
     return commands
