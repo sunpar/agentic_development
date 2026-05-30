@@ -62,6 +62,7 @@ RISKY_TOKENS = [
     "go.mod",
     "cargo.toml",
 ]
+PROTECTED_BRANCH_NAMES = {"main", "master", "develop", "dev", "trunk"}
 
 
 def load_plan(path: Path):
@@ -153,6 +154,7 @@ def validate_plan(plan):
     task_map = {}
     task_wave = {}
     task_ids = set()
+    branch_owner = {}
     for idx, task in enumerate(tasks):
         if not isinstance(task, dict):
             errors.append(f"task index {idx} is not an object")
@@ -169,8 +171,17 @@ def validate_plan(plan):
             errors.append(f"task {tid or idx} missing fields: {sorted(missing)}")
         for field in TASK_LIST_FIELDS.intersection(task):
             as_list(task.get(field), f"task {tid or idx} {field}", errors)
+        branch = str(task.get("branch") or "").strip()
         if "branch" in task and not is_valid_branch_name(task.get("branch")):
             errors.append(f"task {tid or idx} has invalid branch name: {task.get('branch')}")
+        if branch.lower() in PROTECTED_BRANCH_NAMES:
+            errors.append(f"task {tid or idx} uses protected branch name: {branch}")
+        if branch:
+            previous = branch_owner.get(branch)
+            if previous:
+                errors.append(f"duplicate task branch {branch}: {previous} and {tid or idx}")
+            else:
+                branch_owner[branch] = tid or idx
         if task.get("merge_safe") and not str(task.get("merge_safe_reason", "")).strip():
             errors.append(f"task {tid or idx} has merge_safe=true without merge_safe_reason")
         write_set = as_list(task.get("write_set", []), f"task {tid or idx} write_set", errors)

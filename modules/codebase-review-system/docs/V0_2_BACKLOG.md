@@ -7,6 +7,7 @@ The current codebase-intelligence module is a v0.1 scaffold. These items are int
 - Implemented in `feature_task_generator.py`: emits epics, milestones, releases, PR-sized implementation tasks, task Markdown files, tasks CSV, and waves from a feature model.
 - Generated tasks include TDD plans, context bundles, write scopes, dependencies, parallel conflicts, verification commands, and acceptance criteria.
 - Feature implementation tasks are separate from codebase review/refactor slices.
+- Implemented implementation-plan validation for duplicate task branches, protected branch names, invalid Git refs, dependency ordering, and same-wave write conflicts.
 - Implemented in `orchestrate_implementation_waves.py`: validates generated implementation plans, prepares or dry-runs task worktrees, emits task prompts, and writes external run state and summaries.
 - Implemented incremental implementation-wave checkpointing: run state and summaries are written at run start and after each task, including failed task errors when preparation stops early.
 - Implemented self-contained implementation-wave summaries with plan path/hash, selected task ids, per-task wave numbers, branches, worktrees, prompt paths, statuses, and errors.
