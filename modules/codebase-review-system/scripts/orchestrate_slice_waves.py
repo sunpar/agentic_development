@@ -1502,19 +1502,21 @@ def main():
         repo = repo_root('.')
         ensure_clean_or_orchestration_only(repo, slice_plan_path, waves_path)
         args.codex_bin = resolve_codex_binary(args.codex_bin)
+
+        repo_name = repo.name
+        run_dir = Path(args.run_dir).expanduser() if args.run_dir else Path.home() / '.codex' / 'runs' / 'codebase-review' / f'{repo_name}-{_dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")}'
+        run_dir = run_dir.resolve()
+        plan_hash = file_sha256(slice_plan_path)
+        waves_hash = file_sha256(waves_path)
+        branches = slice_branch_map(plan)
+        state = load_state(run_dir, repo, slice_plan_path, waves_path, args.resume, plan_hash, waves_hash, branches, origin_url(repo))
+
         if (args.allow_pr or args.allow_review_request or merge_enabled) and not command_exists('gh'):
             raise RuntimeError('gh binary not found')
         if (args.allow_pr or args.allow_review_request or merge_enabled) and not gh_auth_ok(repo):
             raise RuntimeError('gh auth status failed')
 
-        repo_name = repo.name
-        run_dir = Path(args.run_dir).expanduser() if args.run_dir else Path.home() / '.codex' / 'runs' / 'codebase-review' / f'{repo_name}-{_dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")}'
-        run_dir = run_dir.resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
-        plan_hash = file_sha256(slice_plan_path)
-        waves_hash = file_sha256(waves_path)
-        branches = slice_branch_map(plan)
-        state = load_state(run_dir, repo, slice_plan_path, waves_path, args.resume, plan_hash, waves_hash, branches, origin_url(repo))
         state['codex_bin'] = args.codex_bin
         state_lock = threading.Lock()
         write_json(run_dir / 'run-state.json', state)

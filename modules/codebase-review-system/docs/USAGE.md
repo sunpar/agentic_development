@@ -53,7 +53,46 @@ The generator writes:
 
 Use `--feature FEATURE-ID` to generate tasks for one feature, and `--dry-run` to print JSON without writing files.
 
-`orchestrate_implementation_waves.py` prepares task worktrees, emits per-task prompts, and writes external run state under `~/.codex/runs/implementation-waves/`. It does not run Codex, create PRs, request reviews, or merge.
+`orchestrate_implementation_waves.py` prepares task worktrees, emits per-task prompts, and writes external run state under `~/.codex/runs/implementation-waves/`. It checkpoints run state and summaries at run start and after each task, so partial preparation failures preserve completed task state and the failing task error. It does not run Codex, create PRs, request reviews, or merge.
+
+Resume a partially prepared implementation wave:
+
+```bash
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py \
+  docs/agentic-system/implementation/implementation-plan.json \
+  --wave 1 \
+  --run-dir ~/.codex/runs/implementation-waves/RUN \
+  --worktree-dir ~/.codex/worktrees/implementation \
+  --resume \
+  --reuse-worktrees
+```
+
+Resume mode verifies the saved repo, plan path/hash, selected waves, and dry-run mode before skipping already prepared tasks and retrying failed or missing tasks.
+Use repeatable `--task TASK-ID` with `--wave` to prepare only selected tasks from a wave, preserving plan validation and wave order.
+
+Aggregate historical implementation-wave runs:
+
+```bash
+python3 ~/.codex/agentic-dev-system/scripts/report_implementation_wave_runs.py \
+  --runs-root ~/.codex/runs/implementation-waves \
+  --output-json ~/.codex/runs/implementation-waves/report.json \
+  --output-md ~/.codex/runs/implementation-waves/report.md
+```
+
+The implementation-wave report scans direct child run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals selected waves, tasks, task statuses, dry-run counts, failed tasks, branches, worktrees, and prompt paths across runs.
+
+List old implementation-wave run directories and task worktrees without removing anything:
+
+```bash
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py \
+  --cleanup-artifacts \
+  --dry-run \
+  --runs-root ~/.codex/runs/implementation-waves \
+  --worktree-dir ~/.codex/worktrees/implementation \
+  --cleanup-older-than-days 30
+```
+
+Actual removal requires both `--cleanup-artifacts` and `--confirm-cleanup`. Run directories are only considered when they contain `run-state.json`; worktree cleanup scans direct child directories of `--worktree-dir`.
 
 ## Merge Policy
 

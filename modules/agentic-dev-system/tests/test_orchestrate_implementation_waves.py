@@ -1,7 +1,9 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -187,6 +189,69 @@ class ImplementationWaveExecutorTests(unittest.TestCase):
             state = json.loads((run_dir / "run-state.json").read_text())
             self.assertEqual(list(state["tasks"]), ["TASK-002"])
 
+    def test_task_option_limits_prepared_tasks(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            write_plan(plan, [
+                task("TASK-001", 1),
+                task("TASK-002", 1),
+            ])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--task",
+                "TASK-002",
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(Path(td) / "worktrees"),
+                "--dry-run",
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertNotIn("TASK-001", result.stdout)
+            self.assertIn("TASK-002", result.stdout)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            self.assertEqual(state["selected_task_ids"], ["TASK-002"])
+            self.assertEqual(list(state["tasks"]), ["TASK-002"])
+
+    def test_task_option_rejects_unknown_or_unselected_wave_task(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            write_plan(plan, [
+                task("TASK-001", 1),
+                task("TASK-002", 2, deps=["TASK-001"]),
+            ])
+
+            missing = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--task",
+                "TASK-404",
+                "--dry-run",
+            ], cwd=repo)
+            wrong_wave = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--wave",
+                "2",
+                "--task",
+                "TASK-001",
+                "--dry-run",
+            ], cwd=repo)
+
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("task TASK-404 not found in plan", missing.stderr + missing.stdout)
+            self.assertNotEqual(wrong_wave.returncode, 0)
+            self.assertIn("task TASK-001 is not in selected wave(s)", wrong_wave.stderr + wrong_wave.stdout)
+
     def test_invalid_plan_dependency_fails_before_worktree_creation(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)
@@ -242,6 +307,188 @@ class ImplementationWaveExecutorTests(unittest.TestCase):
             self.assertEqual(reused.returncode, 0, reused.stderr + reused.stdout)
             state = json.loads((Path(td) / "reused-run" / "run-state.json").read_text())
             self.assertTrue(state["tasks"]["TASK-001"]["reused_worktree"])
+
+    def test_cleanup_artifacts_dry_run_lists_old_runs_and_worktrees_without_removing(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_root = Path(td) / "runs"
+            worktrees = Path(td) / "worktrees"
+            old_run = runs_root / "repo-20200101T000000Z"
+            new_run = runs_root / "repo-new"
+            old_worktree = worktrees / "feature-old"
+            new_worktree = worktrees / "feature-new"
+            for path in [old_run, new_run, old_worktree, new_worktree]:
+                path.mkdir(parents=True)
+            (old_run / "run-state.json").write_text("{}\n", encoding="utf-8")
+            (new_run / "run-state.json").write_text("{}\n", encoding="utf-8")
+            old_time = time.time() - (60 * 60 * 24 * 40)
+            os.utime(old_run, (old_time, old_time))
+            os.utime(old_worktree, (old_time, old_time))
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                "--cleanup-artifacts",
+                "--dry-run",
+                "--runs-root",
+                str(runs_root),
+                "--worktree-dir",
+                str(worktrees),
+                "--cleanup-older-than-days",
+                "30",
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn(f"[dry-run] remove run_dir {old_run}", result.stdout)
+            self.assertIn(f"[dry-run] remove worktree {old_worktree}", result.stdout)
+            self.assertNotIn(str(new_run), result.stdout)
+            self.assertNotIn(str(new_worktree), result.stdout)
+            self.assertTrue(old_run.exists())
+            self.assertTrue(old_worktree.exists())
+
+    def test_cleanup_artifacts_removes_worktrees_through_git(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            worktrees = Path(td) / "worktrees"
+            old_worktree = worktrees / "feature-old"
+            git(repo, "worktree", "add", "-b", "feature/old", str(old_worktree), "HEAD")
+            old_time = time.time() - (60 * 60 * 24 * 40)
+            os.utime(old_worktree, (old_time, old_time))
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                "--cleanup-artifacts",
+                "--confirm-cleanup",
+                "--runs-root",
+                str(Path(td) / "runs"),
+                "--worktree-dir",
+                str(worktrees),
+                "--cleanup-older-than-days",
+                "30",
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertFalse(old_worktree.exists())
+            self.assertNotIn(str(old_worktree), git(repo, "worktree", "list", "--porcelain").stdout)
+
+    def test_failure_after_partial_prepare_writes_checkpoint_and_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            write_plan(plan, [
+                task("TASK-001", 1, "feature/task-001"),
+                task("TASK-002", 1, "feature/task-002"),
+            ])
+            git(repo, "branch", "feature/task-002", "HEAD")
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+            ], cwd=repo)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("branch already exists: feature/task-002", result.stderr + result.stdout)
+            self.assertTrue((worktrees / "feature-task-001").exists())
+            state = json.loads((run_dir / "run-state.json").read_text())
+            summary = json.loads((run_dir / "run-summary.json").read_text())
+            self.assertEqual(state["tasks"]["TASK-001"]["status"], "worktree_ready")
+            self.assertEqual(state["tasks"]["TASK-002"]["status"], "failed")
+            self.assertIn("branch already exists", state["tasks"]["TASK-002"]["error"])
+            self.assertEqual(summary["totals"]["by_status"]["worktree_ready"], 1)
+            self.assertEqual(summary["totals"]["by_status"]["failed"], 1)
+            self.assertIn("branch already exists", summary["tasks"][1]["error"])
+            self.assertIn("TASK-002", (run_dir / "run-summary.md").read_text())
+
+    def test_resume_skips_ready_tasks_and_retries_failed_tasks(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            write_plan(plan, [
+                task("TASK-001", 1, "feature/task-001"),
+                task("TASK-002", 1, "feature/task-002"),
+            ])
+            git(repo, "branch", "feature/task-002", "HEAD")
+
+            first = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+            ], cwd=repo)
+            resumed = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--resume",
+                "--reuse-worktrees",
+            ], cwd=repo)
+
+            self.assertNotEqual(first.returncode, 0)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
+            self.assertIn("RESUME: skipping TASK-001 status worktree_ready", resumed.stdout)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            self.assertEqual(state["tasks"]["TASK-001"]["status"], "worktree_ready")
+            self.assertEqual(state["tasks"]["TASK-002"]["status"], "worktree_ready")
+            self.assertTrue((worktrees / "feature-task-001").exists())
+            self.assertTrue((worktrees / "feature-task-002").exists())
+
+    def test_resume_rejects_run_state_for_different_plan_hash(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            write_plan(plan, [task("TASK-001", 1, "feature/task-001")])
+            first = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(Path(td) / "worktrees"),
+                "--dry-run",
+            ], cwd=repo)
+            data = json.loads(plan.read_text())
+            data["tasks"][0]["objective"] = "Changed after run state was written."
+            plan.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            resumed = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(Path(td) / "worktrees"),
+                "--dry-run",
+                "--resume",
+            ], cwd=repo)
+
+            self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+            self.assertNotEqual(resumed.returncode, 0)
+            self.assertIn("run-state implementation plan hash mismatch", resumed.stderr + resumed.stdout)
 
 
 if __name__ == "__main__":
