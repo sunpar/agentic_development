@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import shlex
 from pathlib import Path
+
+ORCHESTRATOR = Path.home() / '.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py'
 
 
 def now_utc():
@@ -53,6 +56,7 @@ def summary_from_state(run_dir):
             'id': slice_id,
             'status': item.get('status'),
             'branch': item.get('branch'),
+            'worktree': item.get('worktree'),
             'pr_number': item.get('pr_number'),
             'error': item.get('error'),
         }
@@ -62,6 +66,11 @@ def summary_from_state(run_dir):
         'generated_at': state.get('updated_at') or state.get('created_at'),
         'repo': state.get('repo'),
         'run_dir': state.get('run_dir') or str(run_dir),
+        'slice_plan': state.get('slice_plan'),
+        'waves_path': state.get('waves_path'),
+        'slice_plan_sha256': state.get('slice_plan_sha256'),
+        'waves_sha256': state.get('waves_sha256'),
+        'slice_branches': state.get('slice_branches', {}),
         'totals': {
             'waves': len(waves),
             'slices': len(slices),
@@ -72,12 +81,95 @@ def summary_from_state(run_dir):
     }
 
 
+def unique_sorted(values):
+    return sorted({str(value) for value in values if value})
+
+
+def slice_by_id(slices):
+    return {
+        str(item.get('id')): item
+        for item in slices
+        if isinstance(item, dict) and item.get('id')
+    }
+
+
+def fill_missing(base, fallback, keys):
+    merged = dict(base)
+    for key in keys:
+        if merged.get(key) in (None, '', []):
+            value = fallback.get(key)
+            if value not in (None, '', []):
+                merged[key] = value
+    return merged
+
+
+def merge_slice_details(summary_slices, state_slices):
+    state_by_id = slice_by_id(state_slices)
+    merged = []
+    seen = set()
+    detail_keys = ('branch', 'worktree', 'pr_number', 'head_sha', 'error')
+    for item in summary_slices:
+        slice_id = str(item.get('id') or '')
+        seen.add(slice_id)
+        merged.append(fill_missing(item, state_by_id.get(slice_id, {}), detail_keys))
+    for slice_id, item in state_by_id.items():
+        if slice_id not in seen:
+            merged.append(item)
+    return merged
+
+
+def enrich_summary_from_state(summary, state_summary):
+    enriched = dict(summary)
+    for key in ('slice_plan', 'waves_path', 'slice_plan_sha256', 'waves_sha256', 'slice_branches', 'repo', 'run_dir'):
+        if enriched.get(key) in (None, '', [], {}):
+            value = state_summary.get(key)
+            if value not in (None, '', [], {}):
+                enriched[key] = value
+    enriched['slices'] = merge_slice_details(
+        [item for item in enriched.get('slices') or [] if isinstance(item, dict)],
+        [item for item in state_summary.get('slices') or [] if isinstance(item, dict)],
+    )
+    return enriched
+
+
+def common_worktree_dir(slices):
+    parents = unique_sorted(str(Path(item['worktree']).parent) for item in slices if item.get('worktree'))
+    return parents[0] if len(parents) == 1 else None
+
+
+def shell_join(parts):
+    return ' '.join(shlex.quote(str(part)) for part in parts if part is not None and str(part) != '')
+
+
+def resume_commands(summary, failed_slices, slices):
+    slice_plan = summary.get('slice_plan')
+    waves_path = summary.get('waves_path')
+    run_dir = summary.get('run_dir')
+    if not slice_plan or not waves_path or not run_dir or not failed_slices:
+        return []
+    worktree_dir = common_worktree_dir(slices)
+    cmd = [
+        'python3',
+        ORCHESTRATOR,
+        slice_plan,
+        waves_path,
+        '--run-dir',
+        run_dir,
+    ]
+    if worktree_dir:
+        cmd += ['--worktree-dir', worktree_dir]
+    cmd += ['--resume', '--reuse-worktrees']
+    return [shell_join(cmd)]
+
+
 def load_run_summary(run_dir):
     summary_path = run_dir / 'run-summary.json'
     state_path = run_dir / 'run-state.json'
     if summary_path.exists():
         summary = load_json(summary_path)
         source = summary_path
+        if state_path.exists():
+            summary = enrich_summary_from_state(summary, summary_from_state(run_dir))
     elif state_path.exists():
         summary = summary_from_state(run_dir)
         source = state_path
@@ -102,6 +194,8 @@ def load_run_summary(run_dir):
         'repo': summary.get('repo'),
         'generated_at': summary.get('generated_at'),
         'summary_source': str(source),
+        'slice_plan': summary.get('slice_plan'),
+        'waves_path': summary.get('waves_path'),
         'totals': {
             'waves': int(totals.get('waves') or 0),
             'slices': int(totals.get('slices') or 0),
@@ -109,6 +203,7 @@ def load_run_summary(run_dir):
         },
         'failed_slices': failed_slices,
         'pr_numbers': pr_numbers,
+        'resume_commands': resume_commands(summary, failed_slices, slices),
     }
 
 
@@ -166,6 +261,8 @@ def write_markdown(path, aggregate):
         if run['pr_numbers']:
             line += '; PRs=' + ', '.join(f'#{number}' for number in run['pr_numbers'])
         lines.append(line)
+        for command in run.get('resume_commands') or []:
+            lines.append(f'  - Resume: `{command}`')
     path.write_text('\n'.join(lines).rstrip() + '\n', encoding='utf-8')
 
 

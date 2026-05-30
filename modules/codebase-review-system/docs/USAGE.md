@@ -127,7 +127,7 @@ The wave orchestrator writes run state outside the target repository by default 
 
 Use repeatable `--setup-command` flags for repo-specific worktree setup such as dependency installation. Setup commands run inside each slice worktree before Codex and before verification commands, with `.venv/bin` and `frontend/node_modules/.bin` placed first on `PATH`.
 
-Each orchestration run writes `run-summary.json` and `run-summary.md` beside `run-state.json`. The summary includes wave status, slice status totals, PR numbers when available, and slice errors when a wave blocks.
+Each orchestration run writes `run-summary.json` and `run-summary.md` beside `run-state.json`. The summary includes plan and waves paths/hashes, slice branch bindings, wave status, slice status totals, worktree paths, PR numbers when available, and slice errors when a wave blocks.
 
 Aggregate historical runs:
 
@@ -138,7 +138,7 @@ python3 ~/.codex/codebase-review-factory/scripts/report_codebase_review_runs.py 
   --output-md ~/.codex/runs/codebase-review/report.md
 ```
 
-The aggregate report scans direct child run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals waves, slices, slice statuses, failed slices, and PR numbers across runs.
+The aggregate report scans direct child run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals waves, slices, slice statuses, failed slices, and PR numbers across runs. When plan and worktree metadata is available, failed slices include a resume command with the saved slice plan, waves file, run directory, worktree root, and `--resume --reuse-worktrees`.
 
 List old external run directories and slice worktrees without removing anything:
 
