@@ -1,4 +1,4 @@
-import json, subprocess, sys, tempfile
+import json, re, subprocess, sys, tempfile
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PY=sys.executable
@@ -61,10 +61,28 @@ class TestSlicePlan(unittest.TestCase):
         ])
         self.assertEqual(props['risk']['enum'], ['low', 'medium', 'high', 'critical'])
         self.assertEqual(props['files_to_read']['minItems'], 1)
-        self.assertEqual(props['tests_to_read']['minItems'], 1)
+        self.assertNotIn('minItems', props['tests_to_read'])
         self.assertEqual(props['verification_commands']['minItems'], 1)
         self.assertEqual(props['expected_pr_size']['properties']['max_files_changed']['minimum'], 1)
         self.assertEqual(wave_schema['properties']['slice_ids']['minItems'], 1)
+        branch_pattern = props['branch']['pattern']
+        self.assertEqual(branch_pattern, r'^(?!/)(?!.*\.\.)[A-Za-z0-9._/-]+$')
+        self.assertIsNotNone(re.match(branch_pattern, 'codebase-review/SLICE-001-review-core-flow'))
+        self.assertIsNone(re.match(branch_pattern, '/tmp'))
+        self.assertIsNone(re.match(branch_pattern, '../escape'))
+        self.assertIsNone(re.match(branch_pattern, 'feature..bad'))
+
+    def test_review_only_allows_empty_tests_to_read(self):
+        data = json.loads((ROOT/'fixtures/sample_slice_plan.valid.json').read_text())
+        data['slices'][0]['slice_type'] = 'review-only'
+        data['slices'][0]['tests_to_read'] = []
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td)/'slice-plan.json'
+            path.write_text(json.dumps(data), encoding='utf-8')
+            result = subprocess.run([PY, str(ROOT/'scripts/validate_slice_plan.py'), str(path)], text=True, stdout=subprocess.PIPE)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_generated_slice_plan_serializes_slices(self):
         feature_model = {

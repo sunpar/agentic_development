@@ -12,9 +12,11 @@ from pathlib import Path
 
 MUST_FIX_RE = re.compile(r'\b(p0|p1|critical|block(?:er|ing)?|must[- ]?fix|changes requested)\b', re.I)
 SHOULD_FIX_RE = re.compile(r'\b(should[- ]?fix|should change|please fix|needs? follow[- ]?up)\b', re.I)
+P2_RE = re.compile(r'(?:\[p2\]|\bp2\b)', re.I)
 NONBLOCKING_RE = [
-    re.compile(r'\bno\s+(?:p0|p1|critical|blocking|blocker|must[- ]?fix|changes requested)\s+(?:findings?|issues?|comments?)\b', re.I),
-    re.compile(r'\b(?:p0|p1|critical|blocking|blocker|must[- ]?fix|changes requested)\s+(?:findings?|issues?)\s*:\s*(?:none|no|0|zero)\b', re.I),
+    re.compile(r'\bnon[- ]blocking\b\s*:?', re.I),
+    re.compile(r'\bno\s+(?:p0|p1|p2|critical|blocking|blocker|must[- ]?fix|changes requested)\s+(?:findings?|issues?|comments?)\b', re.I),
+    re.compile(r'\b(?:p0|p1|p2|critical|blocking|blocker|must[- ]?fix|changes requested)\s+(?:findings?|issues?)\s*:\s*(?:none|no|0|zero)\b', re.I),
     re.compile(r"\bdidn'?t find (?:any )?(?:major|blocking|critical) issues?\b", re.I),
 ]
 
@@ -59,7 +61,7 @@ def classify_severity(body, state=''):
     text = strip_nonblocking_phrases(body)
     if state == 'CHANGES_REQUESTED' or MUST_FIX_RE.search(text):
         return 'must_fix'
-    if SHOULD_FIX_RE.search(text):
+    if SHOULD_FIX_RE.search(text) or P2_RE.search(text):
         return 'should_fix'
     return 'info'
 
@@ -81,8 +83,14 @@ def normalize_item(item, source, index):
         'path': item.get('path'),
         'line': item.get('line'),
         'body': body,
-        'url': item.get('url'),
+        'url': item.get('url') or item.get('html_url'),
     }
+
+
+def reviews_from_payload(payload):
+    if 'latestReviews' in payload:
+        return payload.get('latestReviews') or []
+    return payload.get('reviews') or []
 
 
 def normalize_payload(payload):
@@ -93,7 +101,7 @@ def normalize_payload(payload):
     ]
     reviews = [
         normalize_item(item, 'review', index)
-        for index, item in enumerate(payload.get('reviews') or payload.get('latestReviews') or [], 1)
+        for index, item in enumerate(reviews_from_payload(payload), 1)
         if isinstance(item, dict)
     ]
     items = comments + reviews
@@ -152,8 +160,92 @@ def gh_pr_view(args):
         cmd.append(str(args.pr))
     if args.repo:
         cmd += ['--repo', args.repo]
-    cmd += ['--json', 'comments,reviews,url,number,title']
+    cmd += ['--json', 'comments,latestReviews,url,number,title']
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def repo_from_pr_url(url):
+    match = re.search(r'github\.com[/:]([^/\s]+/[^/\s]+)/pull/\d+', str(url or ''))
+    if not match:
+        return None
+    repo = match.group(1)
+    return repo[:-4] if repo.endswith('.git') else repo
+
+
+def gh_repo_name_with_owner():
+    result = subprocess.run(
+        ['gh', 'repo', 'view', '--json', 'nameWithOwner'],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return payload.get('nameWithOwner')
+
+
+def repo_full_name(args, payload):
+    if args.repo:
+        return args.repo
+    return repo_from_pr_url(payload.get('url')) or gh_repo_name_with_owner()
+
+
+def fetch_inline_review_comments(args, payload):
+    repo = repo_full_name(args, payload)
+    number = payload.get('number') or args.pr
+    if not repo or not number:
+        return []
+    result = subprocess.run(
+        ['gh', 'api', f'repos/{repo}/pulls/{number}/comments', '--paginate'],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    return parse_paginated_json_arrays(result.stdout)
+
+
+def parse_paginated_json_arrays(text):
+    decoder = json.JSONDecoder()
+    comments = []
+    index = 0
+    text = str(text or '')
+    while index < len(text):
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        try:
+            payload, index = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(payload, list):
+            comments.extend(item for item in payload if isinstance(item, dict))
+        elif isinstance(payload, dict):
+            comments.append(payload)
+    return comments
+
+
+def merge_inline_review_comments(payload, inline_comments):
+    comments = list(payload.get('comments') or [])
+    seen = {str(item.get('id')) for item in comments if isinstance(item, dict) and item.get('id') is not None}
+    for item in inline_comments:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get('id')
+        if item_id is not None and str(item_id) in seen:
+            continue
+        comments.append(item)
+        if item_id is not None:
+            seen.add(str(item_id))
+    payload = dict(payload)
+    payload['comments'] = comments
+    return payload
 
 
 def fetch_payload(args):
@@ -163,9 +255,10 @@ def fetch_payload(args):
     while True:
         result = gh_pr_view(args)
         if result.returncode == 0:
-            return json.loads(result.stdout)
+            payload = json.loads(result.stdout)
+            return merge_inline_review_comments(payload, fetch_inline_review_comments(args, payload))
         if time.time() >= end:
-            return {'status': 'timeout', 'comments': [], 'reviews': [], 'error': result.stderr or result.stdout}
+            return {'status': 'timeout', 'comments': [], 'latestReviews': [], 'error': result.stderr or result.stdout}
         time.sleep(max(1, args.poll_seconds))
 
 
