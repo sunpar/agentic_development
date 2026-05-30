@@ -71,6 +71,7 @@ def summary_from_state(run_dir):
         'slice_plan_sha256': state.get('slice_plan_sha256'),
         'waves_sha256': state.get('waves_sha256'),
         'slice_branches': state.get('slice_branches', {}),
+        'execution_options': dict(state.get('execution_options') or {}),
         'totals': {
             'waves': len(waves),
             'slices': len(slices),
@@ -120,7 +121,7 @@ def merge_slice_details(summary_slices, state_slices):
 
 def enrich_summary_from_state(summary, state_summary):
     enriched = dict(summary)
-    for key in ('slice_plan', 'waves_path', 'slice_plan_sha256', 'waves_sha256', 'slice_branches', 'repo', 'run_dir'):
+    for key in ('slice_plan', 'waves_path', 'slice_plan_sha256', 'waves_sha256', 'slice_branches', 'repo', 'run_dir', 'execution_options'):
         if enriched.get(key) in (None, '', [], {}):
             value = state_summary.get(key)
             if value not in (None, '', [], {}):
@@ -141,6 +142,30 @@ def shell_join(parts):
     return ' '.join(shlex.quote(str(part)) for part in parts if part is not None and str(part) != '')
 
 
+def execution_resume_args(summary):
+    options = summary.get('execution_options') or {}
+    args = []
+    if options.get('max_parallel') is not None:
+        args += ['--max-parallel', options.get('max_parallel')]
+    for command in options.get('setup_commands') or []:
+        args += ['--setup-command', command]
+    if options.get('allow_pr'):
+        args.append('--allow-pr')
+    if options.get('allow_review_request'):
+        args.append('--allow-review-request')
+        if options.get('review_agents'):
+            args += ['--review-agents', options.get('review_agents')]
+    if options.get('allow_merge'):
+        args.append('--allow-merge')
+        if options.get('merge_method'):
+            args += ['--merge-method', options.get('merge_method')]
+        if options.get('delete_branch'):
+            args.append('--delete-branch')
+    if options.get('no_merge'):
+        args.append('--no-merge')
+    return args
+
+
 def resume_commands(summary, failed_slices, slices):
     slice_plan = summary.get('slice_plan')
     waves_path = summary.get('waves_path')
@@ -158,6 +183,7 @@ def resume_commands(summary, failed_slices, slices):
     ]
     if worktree_dir:
         cmd += ['--worktree-dir', worktree_dir]
+    cmd += execution_resume_args(summary)
     cmd += ['--resume', '--reuse-worktrees']
     return [shell_join(cmd)]
 
