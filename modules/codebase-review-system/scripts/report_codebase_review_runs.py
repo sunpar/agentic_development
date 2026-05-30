@@ -41,6 +41,31 @@ def sorted_mapping_items(mapping):
     ]
 
 
+SLICE_DETAIL_KEYS = (
+    'branch',
+    'worktree',
+    'pr_number',
+    'head_sha',
+    'error',
+    'review_requested_at',
+    'review_gate_required_at',
+    'review_requests',
+    'review_repair_attempts',
+    'merged_at',
+)
+
+
+def slice_summary(slice_id, item):
+    summary = {
+        'id': slice_id,
+        'status': item.get('status'),
+    }
+    for key in SLICE_DETAIL_KEYS:
+        if key in item:
+            summary[key] = item.get(key)
+    return summary
+
+
 def summary_from_state(run_dir):
     state = load_json(run_dir / 'run-state.json')
     waves = [
@@ -52,14 +77,7 @@ def summary_from_state(run_dir):
         for wave_id, wave in sorted_mapping_items(state.get('waves'))
     ]
     slices = [
-        {
-            'id': slice_id,
-            'status': item.get('status'),
-            'branch': item.get('branch'),
-            'worktree': item.get('worktree'),
-            'pr_number': item.get('pr_number'),
-            'error': item.get('error'),
-        }
+        slice_summary(slice_id, item)
         for slice_id, item in sorted_mapping_items(state.get('slices'))
     ]
     return {
@@ -108,11 +126,10 @@ def merge_slice_details(summary_slices, state_slices):
     state_by_id = slice_by_id(state_slices)
     merged = []
     seen = set()
-    detail_keys = ('branch', 'worktree', 'pr_number', 'head_sha', 'error')
     for item in summary_slices:
         slice_id = str(item.get('id') or '')
         seen.add(slice_id)
-        merged.append(fill_missing(item, state_by_id.get(slice_id, {}), detail_keys))
+        merged.append(fill_missing(item, state_by_id.get(slice_id, {}), SLICE_DETAIL_KEYS))
     for slice_id, item in state_by_id.items():
         if slice_id not in seen:
             merged.append(item)
@@ -188,6 +205,58 @@ def resume_commands(summary, failed_slices, slices):
     return [shell_join(cmd)]
 
 
+def pr_numbers(slices):
+    return sorted({
+        int(item['pr_number'])
+        for item in slices
+        if isinstance(item, dict) and item.get('pr_number') is not None
+    })
+
+
+def review_request_agents_for_slice(item):
+    requests = item.get('review_requests')
+    if isinstance(requests, dict):
+        agents = requests.get('agents')
+        if isinstance(agents, dict):
+            return [str(agent) for agent in agents if agent]
+        if isinstance(agents, list):
+            return [
+                str(agent.get('agent') if isinstance(agent, dict) else agent)
+                for agent in agents
+                if agent
+            ]
+        return [''] if requests.get('requested_at') else []
+    if isinstance(requests, list):
+        agents = []
+        for request in requests:
+            if isinstance(request, dict):
+                agents.append(str(request.get('agent') or ''))
+            elif request:
+                agents.append(str(request))
+        return agents
+    return [''] if item.get('review_requested_at') else []
+
+
+def review_request_count(slices):
+    return sum(len(review_request_agents_for_slice(item)) for item in slices if isinstance(item, dict))
+
+
+def review_request_agents(slices):
+    agents = []
+    for item in slices:
+        if isinstance(item, dict):
+            agents.extend(review_request_agents_for_slice(item))
+    return unique_sorted(agent for agent in agents if agent)
+
+
+def merged_slice_count(slices):
+    return sum(
+        1
+        for item in slices
+        if isinstance(item, dict) and str(item.get('status') or '') == 'merged'
+    )
+
+
 def load_run_summary(run_dir):
     summary_path = run_dir / 'run-summary.json'
     state_path = run_dir / 'run-state.json'
@@ -202,16 +271,14 @@ def load_run_summary(run_dir):
     else:
         return None
 
-    slices = summary.get('slices') or []
-    pr_numbers = sorted({
-        int(item['pr_number'])
-        for item in slices
-        if isinstance(item, dict) and item.get('pr_number') is not None
-    })
+    slices = [item for item in summary.get('slices') or [] if isinstance(item, dict)]
+    prs = pr_numbers(slices)
+    reviews = review_request_count(slices)
+    merges = merged_slice_count(slices)
     failed_slices = [
         str(item.get('id'))
         for item in slices
-        if isinstance(item, dict) and str(item.get('status') or '') in {'failed', 'error'}
+        if str(item.get('status') or '') in {'failed', 'error'}
     ]
     totals = summary.get('totals') or {}
     return {
@@ -228,7 +295,10 @@ def load_run_summary(run_dir):
             'by_status': dict(totals.get('by_status') or {}),
         },
         'failed_slices': failed_slices,
-        'pr_numbers': pr_numbers,
+        'pr_numbers': prs,
+        'review_request_count': reviews,
+        'review_request_agents': review_request_agents(slices),
+        'merged_slices': merges,
         'resume_commands': resume_commands(summary, failed_slices, slices),
     }
 
@@ -254,6 +324,8 @@ def aggregate_runs(runs_root):
             'waves': sum(run['totals']['waves'] for run in runs),
             'slices': sum(run['totals']['slices'] for run in runs),
             'prs': sum(len(run['pr_numbers']) for run in runs),
+            'review_requests': sum(run['review_request_count'] for run in runs),
+            'merged_slices': sum(run['merged_slices'] for run in runs),
             'by_status': by_status,
         },
         'runs': runs,
@@ -274,6 +346,8 @@ def write_markdown(path, aggregate):
         f'- Waves: {aggregate["totals"]["waves"]}',
         f'- Slices: {aggregate["totals"]["slices"]}',
         f'- PRs: {aggregate["totals"]["prs"]}',
+        f'- Review requests: {aggregate["totals"]["review_requests"]}',
+        f'- Merged slices: {aggregate["totals"]["merged_slices"]}',
     ]
     for status, count in sorted(aggregate['totals']['by_status'].items()):
         lines.append(f'- {status}: {count}')
@@ -288,6 +362,10 @@ def write_markdown(path, aggregate):
             line += f'; failed={", ".join(run["failed_slices"])}'
         if run['pr_numbers']:
             line += '; PRs=' + ', '.join(f'#{number}' for number in run['pr_numbers'])
+        if run['review_request_count']:
+            line += f'; review_requests={run["review_request_count"]}'
+        if run['merged_slices']:
+            line += f'; merged={run["merged_slices"]}'
         lines.append(line)
         for command in run.get('resume_commands') or []:
             lines.append(f'  - Resume: `{command}`')

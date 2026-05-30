@@ -89,8 +89,9 @@ def run_summary(state):
         }
         for wave_id, wave in sorted_state_items(state.get('waves'))
     ]
-    slices = [
-        {
+    slices = []
+    for slice_id, item in sorted_state_items(state.get('slices')):
+        summary_item = {
             'id': slice_id,
             'status': item.get('status'),
             'branch': item.get('branch'),
@@ -99,8 +100,16 @@ def run_summary(state):
             'head_sha': item.get('head_sha'),
             'error': item.get('error'),
         }
-        for slice_id, item in sorted_state_items(state.get('slices'))
-    ]
+        for key in (
+            'review_requested_at',
+            'review_gate_required_at',
+            'review_requests',
+            'review_repair_attempts',
+            'merged_at',
+        ):
+            if key in item:
+                summary_item[key] = item.get(key)
+        slices.append(summary_item)
     return {
         'generated_at': now_utc(),
         'repo': state.get('repo'),

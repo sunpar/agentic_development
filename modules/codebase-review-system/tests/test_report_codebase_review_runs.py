@@ -79,7 +79,24 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
                 'repo': '/tmp/repo',
                 'run_dir': str(second),
                 'waves': {'1': {'status': 'succeeded', 'slice_ids': ['SLICE-003']}},
-                'slices': {'SLICE-003': {'status': 'pr_ready', 'pr_number': 11}},
+                'slices': {
+                    'SLICE-003': {
+                        'status': 'merged',
+                        'pr_number': 11,
+                        'review_requested_at': '2026-05-29T13:00:00Z',
+                        'review_gate_required_at': '2026-05-29T13:01:00Z',
+                        'review_requests': {
+                            'requested_at': '2026-05-29T13:00:00Z',
+                            'agents': {
+                                'codex': {'status': 'completed'},
+                                'copilot': {'status': 'timed_out'},
+                            },
+                            'completed_agents': ['codex'],
+                            'timed_out_agents': ['copilot'],
+                        },
+                        'merged_at': '2026-05-29T13:10:00Z',
+                    }
+                },
             }))
             output_json = Path(td) / 'aggregate.json'
             output_md = Path(td) / 'aggregate.md'
@@ -104,11 +121,16 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
         self.assertEqual(aggregate['totals']['waves'], 2)
         self.assertEqual(aggregate['totals']['slices'], 3)
         self.assertEqual(aggregate['totals']['prs'], 2)
+        self.assertEqual(aggregate['totals']['review_requests'], 2)
+        self.assertEqual(aggregate['totals']['merged_slices'], 1)
         self.assertEqual(aggregate['totals']['by_status']['succeeded'], 1)
         self.assertEqual(aggregate['totals']['by_status']['failed'], 1)
-        self.assertEqual(aggregate['totals']['by_status']['pr_ready'], 1)
+        self.assertEqual(aggregate['totals']['by_status']['merged'], 1)
         self.assertEqual(aggregate['runs'][0]['failed_slices'], ['SLICE-002'])
         self.assertEqual(aggregate['runs'][1]['pr_numbers'], [11])
+        self.assertEqual(aggregate['runs'][1]['review_request_count'], 2)
+        self.assertEqual(aggregate['runs'][1]['review_request_agents'], ['codex', 'copilot'])
+        self.assertEqual(aggregate['runs'][1]['merged_slices'], 1)
         self.assertEqual(len(aggregate['runs'][0]['resume_commands']), 1)
         resume = aggregate['runs'][0]['resume_commands'][0]
         self.assertIn(str(Path.home() / '.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py'), resume)
@@ -125,7 +147,11 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
         self.assertIn('## Runs', markdown)
         self.assertIn('repo-20260529T120000Z', markdown)
         self.assertIn('- PRs: 2', markdown)
+        self.assertIn('- Review requests: 2', markdown)
+        self.assertIn('- Merged slices: 1', markdown)
         self.assertIn('failed: 1', markdown)
+        self.assertIn('review_requests=2', markdown)
+        self.assertIn('merged=1', markdown)
         self.assertIn('Resume:', markdown)
 
 

@@ -183,6 +183,43 @@ class TestOrchestrator(unittest.TestCase):
         self.assertEqual(args.review_agent_timeout_seconds, 600)
         self.assertEqual(args.review_thread_timeout_seconds, 0)
 
+    def test_run_summary_preserves_review_and_merge_metadata(self):
+        module = load_orchestrator_module()
+        summary = module.run_summary({
+            'repo': '/tmp/repo',
+            'run_dir': '/tmp/run',
+            'waves': {'1': {'status': 'succeeded', 'slice_ids': ['SLICE-001']}},
+            'slices': {
+                'SLICE-001': {
+                    'status': 'merged',
+                    'branch': 'codebase-review/s1',
+                    'worktree': '/tmp/worktrees/codebase-review-s1',
+                    'pr_number': 123,
+                    'head_sha': 'abc123',
+                    'review_requested_at': '2026-05-22T13:00:00Z',
+                    'review_gate_required_at': '2026-05-22T13:01:00Z',
+                    'review_requests': {
+                        'requested_at': '2026-05-22T13:00:00Z',
+                        'agents': {
+                            'codex': {'status': 'completed'},
+                            'copilot': {'status': 'timed_out'},
+                        },
+                        'completed_agents': ['codex'],
+                        'timed_out_agents': ['copilot'],
+                    },
+                    'review_repair_attempts': [{'attempt': 1, 'status': 'pushed'}],
+                    'merged_at': '2026-05-22T13:10:00Z',
+                }
+            },
+        })
+
+        item = summary['slices'][0]
+        self.assertEqual(item['review_requested_at'], '2026-05-22T13:00:00Z')
+        self.assertEqual(item['review_gate_required_at'], '2026-05-22T13:01:00Z')
+        self.assertEqual(item['review_requests']['timed_out_agents'], ['copilot'])
+        self.assertEqual(item['review_repair_attempts'], [{'attempt': 1, 'status': 'pushed'}])
+        self.assertEqual(item['merged_at'], '2026-05-22T13:10:00Z')
+
     def test_list_shaped_waves_file(self):
         with tempfile.TemporaryDirectory() as td:
             waves = Path(td) / 'waves.json'
