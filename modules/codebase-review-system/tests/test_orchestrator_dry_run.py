@@ -293,9 +293,13 @@ class TestOrchestrator(unittest.TestCase):
             self.assertEqual(state['slices']['SLICE-002']['status'], 'succeeded')
             self.assertFalse((repo / 'run-state.json').exists())
             summary = json.loads((run_dir / 'run-summary.json').read_text())
+            self.assertEqual(summary['slice_plan'], str(plan.resolve()))
+            self.assertEqual(summary['waves_path'], str(plan.resolve()))
+            self.assertEqual(summary['slice_branches']['SLICE-001'], 'codebase-review/s1')
             self.assertEqual(summary['totals']['slices'], 2)
             self.assertEqual(summary['totals']['by_status']['succeeded'], 2)
             self.assertEqual(summary['waves'][0]['status'], 'succeeded')
+            self.assertEqual(summary['slices'][0]['worktree'], str((worktrees / 'codebase-review-s1').resolve()))
             self.assertIn('SLICE-001', (run_dir / 'run-summary.md').read_text())
 
     def test_cleanup_artifacts_dry_run_lists_old_runs_and_worktrees_without_removing(self):

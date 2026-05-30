@@ -18,8 +18,8 @@ The current codebase-intelligence module is a v0.1 scaffold. These items are int
 
 ## Real Wave Orchestration
 
-- Implemented in `orchestrate_slice_waves.py`: resumable state, per-slice worktrees, `--max-parallel`, wave failure blocking, ordered merge gates, external run state under `~/.codex/runs/codebase-review/`, post-wave `run-summary.json` and `run-summary.md`, and safe cleanup listing/removal for old run directories and worktrees.
-- Implemented in `report_codebase_review_runs.py`: aggregate reporting across multiple historical runs, including status totals, failed slices, and PR numbers from `run-summary.json` or `run-state.json`.
+- Implemented in `orchestrate_slice_waves.py`: resumable state, per-slice worktrees, `--max-parallel`, wave failure blocking, ordered merge gates, external run state under `~/.codex/runs/codebase-review/`, post-wave `run-summary.json` and `run-summary.md` with plan/waves bindings and worktree paths, and safe cleanup listing/removal for old run directories and worktrees.
+- Implemented in `report_codebase_review_runs.py`: aggregate reporting across multiple historical runs, including status totals, failed slices, PR numbers, and failed-slice resume commands from `run-summary.json` plus `run-state.json` metadata or from `run-state.json` alone.
 
 ## PR Review And CI Loop
 
