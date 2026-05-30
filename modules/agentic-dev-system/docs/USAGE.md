@@ -55,12 +55,14 @@ python3 ~/.codex/codebase-review-factory/scripts/feature_task_generator.py docs/
 python3 ~/.codex/agentic-dev-system/scripts/validate_plan.py docs/agentic-system/implementation/implementation-plan.json
 python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py docs/agentic-system/implementation/implementation-plan.json --wave 1 --worktree-dir ~/.codex/worktrees/implementation --dry-run
 python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py docs/agentic-system/implementation/implementation-plan.json --wave 1 --worktree-dir ~/.codex/worktrees/implementation --base-ref HEAD
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py docs/agentic-system/implementation/implementation-plan.json --wave 1 --run-dir ~/.codex/runs/implementation-waves/RUN --worktree-dir ~/.codex/worktrees/implementation --resume --reuse-worktrees
 python3 ~/.codex/agentic-dev-system/scripts/report_implementation_wave_runs.py --runs-root ~/.codex/runs/implementation-waves --output-json ~/.codex/runs/implementation-waves/report.json --output-md ~/.codex/runs/implementation-waves/report.md
 python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py --cleanup-artifacts --dry-run --runs-root ~/.codex/runs/implementation-waves --worktree-dir ~/.codex/worktrees/implementation --cleanup-older-than-days 30
 ```
 
 The implementation-wave executor prepares task worktrees and writes run state under `~/.codex/runs/implementation-waves/` by default. It does not run Codex, create PRs, request reviews, or merge.
 It checkpoints `run-state.json`, `run-summary.json`, and `run-summary.md` at run start and after each task, so partial preparation failures keep completed task state and the failing task error in the external run directory.
+Resume mode reloads the existing run state, verifies the repo, implementation plan path/hash, selected waves, and dry-run mode, skips already prepared tasks, and retries failed or missing tasks.
 The implementation-wave reporter scans historical run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals selected waves, tasks, task statuses, dry-run counts, failed tasks, branches, worktrees, and prompt paths.
 Cleanup mode lists matching artifacts with `--dry-run`; actual removal requires `--cleanup-artifacts --confirm-cleanup`. Run directories are only considered when they contain `run-state.json`, and worktree cleanup scans direct children of `--worktree-dir`.
 

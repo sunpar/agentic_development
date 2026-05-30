@@ -55,6 +55,20 @@ Use `--feature FEATURE-ID` to generate tasks for one feature, and `--dry-run` to
 
 `orchestrate_implementation_waves.py` prepares task worktrees, emits per-task prompts, and writes external run state under `~/.codex/runs/implementation-waves/`. It checkpoints run state and summaries at run start and after each task, so partial preparation failures preserve completed task state and the failing task error. It does not run Codex, create PRs, request reviews, or merge.
 
+Resume a partially prepared implementation wave:
+
+```bash
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py \
+  docs/agentic-system/implementation/implementation-plan.json \
+  --wave 1 \
+  --run-dir ~/.codex/runs/implementation-waves/RUN \
+  --worktree-dir ~/.codex/worktrees/implementation \
+  --resume \
+  --reuse-worktrees
+```
+
+Resume mode verifies the saved repo, plan path/hash, selected waves, and dry-run mode before skipping already prepared tasks and retrying failed or missing tasks.
+
 Aggregate historical implementation-wave runs:
 
 ```bash

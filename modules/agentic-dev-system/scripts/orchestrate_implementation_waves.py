@@ -309,6 +309,37 @@ def checkpoint_state(run_dir, state):
     write_summary(run_dir, state)
 
 
+def validate_resume_state(state, repo, plan_path, plan_hash, selected_wave_numbers, dry_run):
+    if state.get("repo") and Path(state["repo"]).resolve() != repo:
+        raise RuntimeError(f"run-state repo mismatch: expected {repo}, got {state.get('repo')}")
+    if state.get("implementation_plan") and Path(state["implementation_plan"]).resolve() != plan_path:
+        raise RuntimeError(f"run-state implementation plan path mismatch: expected {plan_path}, got {state.get('implementation_plan')}")
+    if state.get("implementation_plan_sha256") and state.get("implementation_plan_sha256") != plan_hash:
+        raise RuntimeError("run-state implementation plan hash mismatch")
+    if list(state.get("selected_waves") or []) != list(selected_wave_numbers):
+        raise RuntimeError("run-state selected waves mismatch")
+    if bool(state.get("dry_run")) != bool(dry_run):
+        raise RuntimeError("run-state dry-run mode mismatch")
+    state.setdefault("tasks", {})
+    return state
+
+
+def load_or_initialize_state(run_dir, repo, plan_path, plan_hash, selected_wave_numbers, dry_run, resume):
+    state_path = run_dir / "run-state.json"
+    if resume:
+        if not state_path.exists():
+            raise RuntimeError(f"run-state not found for resume: {state_path}")
+        return validate_resume_state(
+            load_json(state_path),
+            repo,
+            plan_path,
+            plan_hash,
+            selected_wave_numbers,
+            dry_run,
+        )
+    return initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, dry_run)
+
+
 def initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, dry_run):
     return {
         "created_at": now_utc(),
@@ -341,6 +372,7 @@ def parse_args():
     parser.add_argument("--base-ref", default="HEAD")
     parser.add_argument("--max-parallel", type=int, default=1)
     parser.add_argument("--reuse-worktrees", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--cleanup-artifacts", action="store_true", help="List or remove old run directories and task worktrees.")
     parser.add_argument("--cleanup-older-than-days", type=int, default=30)
@@ -370,15 +402,28 @@ def main():
         stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         run_dir = Path(args.run_dir).expanduser() if args.run_dir else Path.home() / ".codex" / "runs" / "implementation-waves" / f"{repo_name}-{stamp}"
         run_dir = run_dir.resolve()
-        run_dir.mkdir(parents=True, exist_ok=True)
         worktree_dir = Path(args.worktree_dir).expanduser().resolve()
-        state = initial_state(repo, run_dir, plan_path, file_sha256(plan_path), selected_wave_numbers, args.dry_run)
+        plan_hash = file_sha256(plan_path)
+        state = load_or_initialize_state(
+            run_dir,
+            repo,
+            plan_path,
+            plan_hash,
+            selected_wave_numbers,
+            args.dry_run,
+            args.resume,
+        )
+        run_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_state(run_dir, state)
 
         print(f"implementation_waves={selected_wave_numbers} tasks={len(tasks)} dry_run={args.dry_run}")
         for task in tasks:
             branch = task.get("branch") or f"agentic-task-{task['id'].lower()}"
             task_id = task["id"]
+            previous = state.get("tasks", {}).get(task_id) or {}
+            if args.resume and previous.get("status") in {"planned", "worktree_ready"}:
+                print(f"RESUME: skipping {task_id} status {previous.get('status')}")
+                continue
             prompt_path = None
             planned_worktree = worktree_dir / sanitize_worktree_name(branch)
             state["tasks"][task_id] = {

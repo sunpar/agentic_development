@@ -345,6 +345,88 @@ class ImplementationWaveExecutorTests(unittest.TestCase):
             self.assertIn("branch already exists", summary["tasks"][1]["error"])
             self.assertIn("TASK-002", (run_dir / "run-summary.md").read_text())
 
+    def test_resume_skips_ready_tasks_and_retries_failed_tasks(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            write_plan(plan, [
+                task("TASK-001", 1, "feature/task-001"),
+                task("TASK-002", 1, "feature/task-002"),
+            ])
+            git(repo, "branch", "feature/task-002", "HEAD")
+
+            first = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+            ], cwd=repo)
+            resumed = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--resume",
+                "--reuse-worktrees",
+            ], cwd=repo)
+
+            self.assertNotEqual(first.returncode, 0)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
+            self.assertIn("RESUME: skipping TASK-001 status worktree_ready", resumed.stdout)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            self.assertEqual(state["tasks"]["TASK-001"]["status"], "worktree_ready")
+            self.assertEqual(state["tasks"]["TASK-002"]["status"], "worktree_ready")
+            self.assertTrue((worktrees / "feature-task-001").exists())
+            self.assertTrue((worktrees / "feature-task-002").exists())
+
+    def test_resume_rejects_run_state_for_different_plan_hash(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            write_plan(plan, [task("TASK-001", 1, "feature/task-001")])
+            first = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(Path(td) / "worktrees"),
+                "--dry-run",
+            ], cwd=repo)
+            data = json.loads(plan.read_text())
+            data["tasks"][0]["objective"] = "Changed after run state was written."
+            plan.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            resumed = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(Path(td) / "worktrees"),
+                "--dry-run",
+                "--resume",
+            ], cwd=repo)
+
+            self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+            self.assertNotEqual(resumed.returncode, 0)
+            self.assertIn("run-state implementation plan hash mismatch", resumed.stderr + resumed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
