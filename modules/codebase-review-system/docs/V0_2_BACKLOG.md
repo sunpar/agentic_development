@@ -8,6 +8,7 @@ The current codebase-intelligence module is a v0.1 scaffold. These items are int
 - Generated tasks include TDD plans, context bundles, write scopes, dependencies, parallel conflicts, verification commands, and acceptance criteria.
 - Feature implementation tasks are separate from codebase review/refactor slices.
 - Implemented in `orchestrate_implementation_waves.py`: validates generated implementation plans, prepares or dry-runs task worktrees, emits task prompts, and writes external run state and summaries.
+- Implemented in `report_implementation_wave_runs.py`: aggregate reporting across multiple historical implementation-wave runs, including dry-run counts, selected waves, task status totals, failed tasks, branches, worktrees, and prompt paths from `run-summary.json` or `run-state.json`.
 - Remaining follow-up: add Codex task execution and PR automation after the dry-run/worktree executor has been dogfooded.
 
 ## Real Wave Orchestration

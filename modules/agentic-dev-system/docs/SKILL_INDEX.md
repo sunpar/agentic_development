@@ -58,6 +58,7 @@
 - `~/.codex/agentic-dev-system/scripts/validate_plan.py`
 - `~/.codex/agentic-dev-system/scripts/create_task_worktree.py`
 - `~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py`
+- `~/.codex/agentic-dev-system/scripts/report_implementation_wave_runs.py`
 - `~/.codex/agentic-dev-system/scripts/emit_tasks_csv.py`
 - `~/.codex/agentic-dev-system/scripts/merge_wave.py`
 - `~/.codex/agentic-dev-system/scripts/commit_push_pr.py`

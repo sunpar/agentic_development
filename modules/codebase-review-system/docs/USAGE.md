@@ -55,6 +55,17 @@ Use `--feature FEATURE-ID` to generate tasks for one feature, and `--dry-run` to
 
 `orchestrate_implementation_waves.py` prepares task worktrees, emits per-task prompts, and writes external run state under `~/.codex/runs/implementation-waves/`. It does not run Codex, create PRs, request reviews, or merge.
 
+Aggregate historical implementation-wave runs:
+
+```bash
+python3 ~/.codex/agentic-dev-system/scripts/report_implementation_wave_runs.py \
+  --runs-root ~/.codex/runs/implementation-waves \
+  --output-json ~/.codex/runs/implementation-waves/report.json \
+  --output-md ~/.codex/runs/implementation-waves/report.md
+```
+
+The implementation-wave report scans direct child run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals selected waves, tasks, task statuses, dry-run counts, failed tasks, branches, worktrees, and prompt paths across runs.
+
 ## Merge Policy
 
 Merging is opt-in. Use `--allow-merge` only when the user explicitly asks for merge execution. Use `--no-merge` or `--pr-only` when the desired outcome is PR-only.

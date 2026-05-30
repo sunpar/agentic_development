@@ -31,6 +31,15 @@ python3 ~/.codex/codebase-review-factory/scripts/validate_slice_plan.py \
   docs/agentic-system/review/slice-plan.json
 ```
 
+## Implementation Wave Reporting
+
+```bash
+python3 ~/.codex/agentic-dev-system/scripts/report_implementation_wave_runs.py \
+  --runs-root ~/.codex/runs/implementation-waves \
+  --output-json ~/.codex/runs/implementation-waves/report.json \
+  --output-md ~/.codex/runs/implementation-waves/report.md
+```
+
 ## End-To-End Wrapper
 
 Dry-run:
@@ -97,4 +106,3 @@ python3 ~/.codex/codebase-review-factory/scripts/orchestrate_slice_waves.py \
   --allow-merge \
   --merge-method squash
 ```
-

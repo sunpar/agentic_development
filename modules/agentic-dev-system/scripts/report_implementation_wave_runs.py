@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""Aggregate implementation-wave run summaries."""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+from pathlib import Path
+
+
+def now_utc():
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def load_json(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def write_json(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def status_counts(items):
+    counts = {}
+    for item in items:
+        status = str(item.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def sorted_task_items(mapping):
+    return [
+        (key, value)
+        for key, value in sorted((mapping or {}).items(), key=lambda item: str(item[0]))
+        if isinstance(value, dict)
+    ]
+
+
+def summary_from_state(run_dir):
+    state = load_json(run_dir / "run-state.json")
+    tasks = [
+        {
+            "id": task_id,
+            "status": item.get("status"),
+            "wave": item.get("wave"),
+            "branch": item.get("branch"),
+            "worktree": item.get("worktree"),
+            "prompt_path": item.get("prompt_path"),
+            "error": item.get("error"),
+        }
+        for task_id, item in sorted_task_items(state.get("tasks"))
+    ]
+    return {
+        "generated_at": state.get("updated_at") or state.get("created_at"),
+        "repo": state.get("repo"),
+        "run_dir": state.get("run_dir") or str(run_dir),
+        "dry_run": bool(state.get("dry_run")),
+        "selected_waves": list(state.get("selected_waves") or []),
+        "totals": {
+            "tasks": len(tasks),
+            "by_status": status_counts(tasks),
+        },
+        "tasks": tasks,
+    }
+
+
+def unique_sorted(values):
+    return sorted({str(value) for value in values if value})
+
+
+def load_run_summary(run_dir):
+    summary_path = run_dir / "run-summary.json"
+    state_path = run_dir / "run-state.json"
+    if summary_path.exists():
+        summary = load_json(summary_path)
+        source = summary_path
+    elif state_path.exists():
+        summary = summary_from_state(run_dir)
+        source = state_path
+    else:
+        return None
+
+    tasks = [item for item in summary.get("tasks") or [] if isinstance(item, dict)]
+    failed_tasks = [
+        str(item.get("id"))
+        for item in tasks
+        if str(item.get("status") or "") in {"failed", "error"}
+    ]
+    totals = summary.get("totals") or {}
+    selected_waves = list(summary.get("selected_waves") or [])
+    return {
+        "name": run_dir.name,
+        "run_dir": str(run_dir),
+        "repo": summary.get("repo"),
+        "generated_at": summary.get("generated_at"),
+        "summary_source": str(source),
+        "dry_run": bool(summary.get("dry_run")),
+        "selected_waves": selected_waves,
+        "totals": {
+            "waves": len(selected_waves),
+            "tasks": int(totals.get("tasks") or len(tasks)),
+            "by_status": dict(totals.get("by_status") or status_counts(tasks)),
+        },
+        "failed_tasks": failed_tasks,
+        "branches": unique_sorted(item.get("branch") for item in tasks),
+        "worktrees": unique_sorted(item.get("worktree") for item in tasks),
+        "prompt_paths": unique_sorted(item.get("prompt_path") for item in tasks),
+    }
+
+
+def aggregate_runs(runs_root):
+    runs_root = Path(runs_root).expanduser()
+    runs = []
+    if runs_root.exists():
+        for child in sorted(runs_root.iterdir(), key=lambda path: path.name):
+            if child.is_dir():
+                summary = load_run_summary(child)
+                if summary:
+                    runs.append(summary)
+    by_status = {}
+    for run in runs:
+        for status, count in run["totals"]["by_status"].items():
+            by_status[status] = by_status.get(status, 0) + int(count)
+    return {
+        "generated_at": now_utc(),
+        "runs_root": str(runs_root),
+        "totals": {
+            "runs": len(runs),
+            "dry_runs": sum(1 for run in runs if run["dry_run"]),
+            "waves": sum(run["totals"]["waves"] for run in runs),
+            "tasks": sum(run["totals"]["tasks"] for run in runs),
+            "by_status": by_status,
+        },
+        "runs": runs,
+    }
+
+
+def write_markdown(path, aggregate):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Implementation Wave Run Report",
+        "",
+        f"Runs root: {aggregate['runs_root']}",
+        "",
+        "## Totals",
+        "",
+        f"- Runs: {aggregate['totals']['runs']}",
+        f"- Dry runs: {aggregate['totals']['dry_runs']}",
+        f"- Waves: {aggregate['totals']['waves']}",
+        f"- Tasks: {aggregate['totals']['tasks']}",
+    ]
+    for status, count in sorted(aggregate["totals"]["by_status"].items()):
+        lines.append(f"- {status}: {count}")
+    lines += ["", "## Runs", ""]
+    for run in aggregate["runs"]:
+        status_text = ", ".join(
+            f"{status}: {count}"
+            for status, count in sorted(run["totals"]["by_status"].items())
+        ) or "no tasks"
+        mode = "dry-run" if run["dry_run"] else "real"
+        line = f"- {run['name']}: {run['totals']['tasks']} tasks ({status_text}); {mode}"
+        if run["selected_waves"]:
+            line += "; waves=" + ", ".join(str(wave) for wave in run["selected_waves"])
+        if run["failed_tasks"]:
+            line += f"; failed={', '.join(run['failed_tasks'])}"
+        if run["branches"]:
+            line += "; branches=" + ", ".join(run["branches"])
+        lines.append(line)
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Aggregate implementation-wave orchestration runs.")
+    parser.add_argument("--runs-root", default="~/.codex/runs/implementation-waves")
+    parser.add_argument("--output-json")
+    parser.add_argument("--output-md")
+    args = parser.parse_args()
+
+    aggregate = aggregate_runs(args.runs_root)
+    if args.output_json:
+        write_json(args.output_json, aggregate)
+        print(args.output_json)
+    else:
+        print(json.dumps(aggregate, indent=2, sort_keys=True))
+    if args.output_md:
+        write_markdown(args.output_md, aggregate)
+        print(args.output_md)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
