@@ -56,6 +56,22 @@ def fake_gh_bin(bin_dir, body):
     return path
 
 
+def fake_merge_gate(path, log_path, body="print('merged')"):
+    path = Path(path)
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib\n"
+        "import sys\n"
+        f"with pathlib.Path({str(log_path)!r}).open('a', encoding='utf-8') as handle:\n"
+        "    handle.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        + body.strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path
+
+
 def task(task_id, wave, branch=None, deps=None):
     return {
         "id": task_id,
@@ -459,6 +475,92 @@ elif sys.argv[1:3] == ['pr', 'comment']:
 
             self.assertEqual(result.returncode, 2)
             self.assertIn("--allow-review-request requires --allow-pr", result.stderr + result.stdout)
+
+    def test_allow_merge_runs_merge_gate_after_created_pr(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            add_bare_origin(td, repo)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            bin_dir = Path(td) / "bin"
+            bin_dir.mkdir()
+            codex = fake_codex_bin(bin_dir, """
+import pathlib
+pathlib.Path('src').mkdir(exist_ok=True)
+pathlib.Path('src/task-001.py').write_text('implemented\\n', encoding='utf-8')
+""")
+            gh = fake_gh_bin(bin_dir, """
+import sys
+if sys.argv[1:3] == ['pr', 'create']:
+    print('https://github.com/example/repo/pull/123')
+""")
+            merge_log = Path(td) / "merge-gate.log"
+            merge_gate = fake_merge_gate(Path(td) / "merge_gate.py", merge_log)
+            item = task("TASK-001", 1, "feature/task-001-core-flow")
+            item["verification_commands"] = ["python3 -c \"from pathlib import Path; assert Path('src/task-001.py').exists()\""]
+            write_plan(plan, [item])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--allow-pr",
+                "--allow-merge",
+                "--merge-gate-script",
+                str(merge_gate),
+                "--merge-method",
+                "squash",
+                "--delete-branch",
+                "--codex-bin",
+                str(codex),
+                "--gh-bin",
+                str(gh),
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            worktree = worktrees / "feature-task-001-core-flow"
+            calls = merge_log.read_text()
+            self.assertIn("--pr 123", calls)
+            self.assertIn(f"--repo-path {worktree.resolve()}", calls)
+            self.assertIn("--allow-merge", calls)
+            self.assertIn("--merge-method squash", calls)
+            self.assertIn("--expected-head-sha", calls)
+            self.assertIn("--delete-branch", calls)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            task_state = state["tasks"]["TASK-001"]
+            self.assertEqual(task_state["status"], "merged")
+            self.assertTrue(task_state["merged_at"])
+            self.assertEqual(task_state["merge"]["returncode"], 0)
+            self.assertTrue((run_dir / "tasks" / "TASK-001" / "merge.stdout.log").exists())
+            self.assertTrue((run_dir / "tasks" / "TASK-001" / "merge.stderr.log").exists())
+            summary = json.loads((run_dir / "run-summary.json").read_text())
+            self.assertEqual(summary["totals"]["by_status"]["merged"], 1)
+            self.assertEqual(summary["tasks"][0]["merge"]["returncode"], 0)
+
+    def test_allow_merge_requires_allow_pr(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            write_plan(plan, [task("TASK-001", 1, "feature/task-001-core-flow")])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--allow-codex",
+                "--allow-merge",
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--allow-merge requires --allow-pr", result.stderr + result.stdout)
 
     def test_wave_option_limits_prepared_tasks(self):
         with tempfile.TemporaryDirectory() as td:
