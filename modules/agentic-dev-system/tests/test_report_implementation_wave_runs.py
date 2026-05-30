@@ -22,6 +22,72 @@ def run(cmd):
 
 
 class ImplementationWaveRunReportTests(unittest.TestCase):
+    def test_state_enrichment_treats_empty_task_detail_dict_as_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "runs"
+            run_dir = root / "repo-20260529T140000Z"
+            run_dir.mkdir(parents=True)
+            (run_dir / "run-summary.json").write_text(json.dumps({
+                "repo": "/tmp/repo",
+                "run_dir": str(run_dir),
+                "selected_waves": [1],
+                "totals": {
+                    "tasks": 1,
+                    "by_status": {"merged": 1},
+                },
+                "tasks": [
+                    {
+                        "id": "TASK-001",
+                        "status": "merged",
+                        "review_requests": {},
+                        "merge": {},
+                    },
+                ],
+            }), encoding="utf-8")
+            (run_dir / "run-state.json").write_text(json.dumps({
+                "repo": "/tmp/repo",
+                "run_dir": str(run_dir),
+                "selected_waves": [1],
+                "selected_task_ids": ["TASK-001"],
+                "tasks": {
+                    "TASK-001": {
+                        "status": "merged",
+                        "wave": 1,
+                        "branch": "feature/task-001",
+                        "worktree": "/tmp/worktrees/task-001",
+                        "pr_number": 123,
+                        "review_requests": [
+                            {"agent": "codex", "returncode": 0},
+                        ],
+                        "merge": {
+                            "returncode": 0,
+                            "stdout_log": str(run_dir / "tasks/TASK-001/merge.stdout.log"),
+                            "stderr_log": str(run_dir / "tasks/TASK-001/merge.stderr.log"),
+                        },
+                    },
+                },
+            }), encoding="utf-8")
+            output_json = Path(td) / "aggregate.json"
+
+            result = run([
+                PY,
+                str(SCRIPT),
+                "--runs-root",
+                str(root),
+                "--output-json",
+                str(output_json),
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            aggregate = json.loads(output_json.read_text())
+
+        self.assertEqual(aggregate["runs"][0]["pr_numbers"], [123])
+        self.assertEqual(aggregate["runs"][0]["review_request_count"], 1)
+        self.assertEqual(aggregate["runs"][0]["merge_log_paths"], [
+            str(run_dir / "tasks/TASK-001/merge.stderr.log"),
+            str(run_dir / "tasks/TASK-001/merge.stdout.log"),
+        ])
+
     def test_aggregates_summary_and_state_backed_runs(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "runs"
