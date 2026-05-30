@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime as dt
 import hashlib
 import json
@@ -11,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -21,6 +23,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from validate_plan import validate_plan  # noqa: E402
 
 MODEL_ARGS = ["--model", "gpt-5.3-codex-spark", "-c", 'model_reasoning_effort="xhigh"']
+WORKTREE_CREATE_LOCK = threading.Lock()
 
 
 def default_merge_gate_script():
@@ -627,8 +630,236 @@ def execution_options(args, merge_enabled):
         "allow_merge": bool(merge_enabled),
         "no_merge": bool(args.no_merge),
         "merge_method": args.merge_method,
+        "max_parallel": args.max_parallel,
         "delete_branch": bool(args.delete_branch),
     }
+
+
+def completed_task_statuses(args, merge_enabled):
+    if args.allow_codex and not args.dry_run:
+        if merge_enabled:
+            return {"merged", "no_changes"}
+        if args.allow_pr:
+            return {"pr_ready", "no_changes"}
+        return {"implemented"}
+    return {"planned"} if args.dry_run else {"worktree_ready"}
+
+
+def checkpoint_task_state(run_dir, state, state_lock, task_id, updates, replace=False):
+    with state_lock:
+        if replace:
+            state.setdefault("tasks", {})[task_id] = updates
+        else:
+            state.setdefault("tasks", {}).setdefault(task_id, {}).update(updates)
+        checkpoint_state(run_dir, state)
+        return dict(state["tasks"][task_id])
+
+
+def current_task_state(state, state_lock, task_id):
+    with state_lock:
+        return dict(state.get("tasks", {}).get(task_id, {}))
+
+
+def run_task(task, args, repo, worktree_dir, base_ref, run_dir, plan_path, state, state_lock, pr_base_branch):
+    task_id = task["id"]
+    branch = task.get("branch") or f"agentic-task-{task_id.lower()}"
+    prompt_path = None
+    worktree_path = worktree_dir / sanitize_worktree_name(branch)
+    checkpoint_task_state(
+        run_dir,
+        state,
+        state_lock,
+        task_id,
+        {
+            "status": "running",
+            "id": task_id,
+            "wave": int(task.get("wave")),
+            "branch": branch,
+            "worktree": str(worktree_path),
+            "prompt_path": None,
+            "task_file": task.get("task_file"),
+            "reused_worktree": False,
+            "started_at": now_utc(),
+        },
+        replace=True,
+    )
+    try:
+        prompt_path = write_task_artifacts(run_dir, plan_path, task)
+        with WORKTREE_CREATE_LOCK:
+            worktree_path, reused = prepare_worktree(
+                repo,
+                worktree_dir,
+                branch,
+                base_ref,
+                args.reuse_worktrees,
+                args.dry_run,
+            )
+        status = "planned" if args.dry_run else "worktree_ready"
+        checkpoint_task_state(
+            run_dir,
+            state,
+            state_lock,
+            task_id,
+            {
+                "status": status,
+                "worktree": str(worktree_path),
+                "prompt_path": prompt_path,
+                "reused_worktree": reused,
+                "completed_at": now_utc(),
+            },
+        )
+        if args.allow_codex and not args.dry_run:
+            task_dir = run_dir / "tasks" / task_id
+            codex = run_codex_task(args, worktree_path, prompt_path, task_dir)
+            checkpoint_task_state(run_dir, state, state_lock, task_id, {"codex": codex})
+            if codex["returncode"]:
+                raise RuntimeError(f"codex exited {codex['returncode']}")
+            verify = verification_results(task.get("verification_commands", []), worktree_path)
+            checkpoint_task_state(run_dir, state, state_lock, task_id, {"verification": verify})
+            failed = failed_verification(verify)
+            if failed:
+                raise RuntimeError(f"verification failed: {failed['command']}")
+            files = changed_files(worktree_path)
+            checkpoint_task_state(
+                run_dir,
+                state,
+                state_lock,
+                task_id,
+                {
+                    "status": "implemented",
+                    "changed_files": files,
+                    "completed_at": now_utc(),
+                },
+            )
+            if args.allow_pr:
+                if not files:
+                    checkpoint_task_state(
+                        run_dir,
+                        state,
+                        state_lock,
+                        task_id,
+                        {
+                            "status": "no_changes",
+                            "completed_at": now_utc(),
+                        },
+                    )
+                else:
+                    commit_sha = commit_task(worktree_path, task, files)
+                    push_branch(worktree_path, branch)
+                    pr = create_task_pr(args, worktree_path, task, branch, pr_base_branch, verify)
+                    checkpoint_task_state(
+                        run_dir,
+                        state,
+                        state_lock,
+                        task_id,
+                        {
+                            "status": "pr_ready",
+                            "commit_sha": commit_sha,
+                            "pr_url": pr["url"],
+                            "pr_number": pr["number"],
+                            "completed_at": now_utc(),
+                        },
+                    )
+                    if args.allow_review_request:
+                        requests = request_review_comments(args, worktree_path, pr, review_agents(args.review_agents))
+                        checkpoint_task_state(
+                            run_dir,
+                            state,
+                            state_lock,
+                            task_id,
+                            {
+                                "review_requested_at": now_utc(),
+                                "review_requests": requests,
+                                "completed_at": now_utc(),
+                            },
+                        )
+        prefix = "DRY-RUN: would prepare" if args.dry_run else "prepared"
+        print(f"{prefix} {task_id} branch {branch} worktree {worktree_path}")
+        print(f"NEXT: task prompt {prompt_path}")
+        if args.allow_codex and args.dry_run:
+            print(f"DRY-RUN: would run codex for {task_id}")
+        return current_task_state(state, state_lock, task_id)
+    except Exception as exc:  # noqa: BLE001 - task state records exact failure.
+        checkpoint_task_state(
+            run_dir,
+            state,
+            state_lock,
+            task_id,
+            {
+                "status": "failed",
+                "prompt_path": prompt_path,
+                "error": str(exc),
+                "completed_at": now_utc(),
+            },
+        )
+        return current_task_state(state, state_lock, task_id)
+
+
+def merge_ready_task(task, args, run_dir, state, state_lock):
+    task_id = task["id"]
+    task_state = current_task_state(state, state_lock, task_id)
+    status = task_state.get("status")
+    if status in {"merged", "no_changes"}:
+        return task_state
+    if status != "pr_ready":
+        raise RuntimeError(f"{task_id} is not ready to merge; status={status}")
+    task_dir = run_dir / "tasks" / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    pr = {
+        "url": task_state.get("pr_url"),
+        "number": task_state.get("pr_number"),
+    }
+    try:
+        if args.allow_review_request and not task_state.get("review_requests"):
+            requests = request_review_comments(args, Path(task_state["worktree"]), pr, review_agents(args.review_agents))
+            task_state = checkpoint_task_state(
+                run_dir,
+                state,
+                state_lock,
+                task_id,
+                {
+                    "review_requested_at": now_utc(),
+                    "review_requests": requests,
+                    "completed_at": now_utc(),
+                },
+            )
+        merge = run_merge_gate(
+            args,
+            Path(task_state["worktree"]),
+            task_dir,
+            pr,
+            task_state.get("commit_sha"),
+            task_state.get("review_requested_at") if args.allow_review_request else None,
+        )
+        checkpoint_task_state(run_dir, state, state_lock, task_id, {"merge": merge})
+        if merge["returncode"]:
+            raise RuntimeError(f"merge gate exited {merge['returncode']}")
+        merged = checkpoint_task_state(
+            run_dir,
+            state,
+            state_lock,
+            task_id,
+            {
+                "status": "merged",
+                "merged_at": now_utc(),
+                "completed_at": now_utc(),
+            },
+        )
+        print(f"merged {task_id} existing PR {pr.get('number') or pr.get('url')}")
+        return merged
+    except Exception as exc:  # noqa: BLE001 - task state records exact failure.
+        checkpoint_task_state(
+            run_dir,
+            state,
+            state_lock,
+            task_id,
+            {
+                "status": "failed",
+                "error": str(exc),
+                "completed_at": now_utc(),
+            },
+        )
+        raise
 
 
 def validate_or_raise(plan):
@@ -738,185 +969,78 @@ def main():
             args.resume,
         )
         run_dir.mkdir(parents=True, exist_ok=True)
+        state_lock = threading.Lock()
         checkpoint_state(run_dir, state)
 
         print(f"implementation_waves={selected_wave_numbers} tasks={len(tasks)} dry_run={args.dry_run}")
-        for task in tasks:
-            branch = task.get("branch") or f"agentic-task-{task['id'].lower()}"
-            task_id = task["id"]
-            previous = state.get("tasks", {}).get(task_id) or {}
-            if args.allow_codex and not args.dry_run:
-                if merge_enabled:
-                    complete_statuses = {"merged", "no_changes"}
-                elif args.allow_pr:
-                    complete_statuses = {"pr_ready", "no_changes"}
-                else:
-                    complete_statuses = {"implemented"}
-            else:
-                complete_statuses = {"planned"} if args.dry_run else {"worktree_ready"}
-            if args.resume and previous.get("status") in complete_statuses:
-                print(f"RESUME: skipping {task_id} status {previous.get('status')}")
+        tasks_by_id = {task["id"]: task for task in tasks}
+        selected_task_set = set(selected_task_ids)
+        complete_statuses = completed_task_statuses(args, merge_enabled)
+        for wave in selected:
+            wave_number = int(wave.get("wave"))
+            wave_task_ids = [
+                task_id
+                for task_id in wave.get("task_ids", [])
+                if task_id in selected_task_set
+            ]
+            if not wave_task_ids:
                 continue
-            if args.resume and merge_enabled and previous.get("status") == "pr_ready":
-                prompt_path = previous.get("prompt_path")
-                state["tasks"][task_id] = previous
-                try:
-                    worktree_path = Path(previous["worktree"])
-                    task_dir = run_dir / "tasks" / task_id
-                    task_dir.mkdir(parents=True, exist_ok=True)
-                    pr = {
-                        "url": previous.get("pr_url"),
-                        "number": previous.get("pr_number"),
-                    }
-                    if args.allow_review_request and not previous.get("review_requests"):
-                        requests = request_review_comments(args, worktree_path, pr, review_agents(args.review_agents))
-                        state["tasks"][task_id].update({
-                            "review_requested_at": now_utc(),
-                            "review_requests": requests,
-                            "completed_at": now_utc(),
-                        })
-                        checkpoint_state(run_dir, state)
-                    merge = run_merge_gate(
-                        args,
-                        worktree_path,
-                        task_dir,
-                        pr,
-                        previous.get("commit_sha"),
-                        state["tasks"][task_id].get("review_requested_at") if args.allow_review_request else None,
-                    )
-                    state["tasks"][task_id]["merge"] = merge
-                    checkpoint_state(run_dir, state)
-                    if merge["returncode"]:
-                        raise RuntimeError(f"merge gate exited {merge['returncode']}")
-                    state["tasks"][task_id].update({
-                        "status": "merged",
-                        "merged_at": now_utc(),
-                        "completed_at": now_utc(),
-                    })
-                    checkpoint_state(run_dir, state)
-                    print(f"RESUME: merged {task_id} existing PR {pr.get('number') or pr.get('url')}")
+            print(f"wave {wave_number}: {wave_task_ids}")
+            pending = []
+            for task_id in wave_task_ids:
+                previous = state.get("tasks", {}).get(task_id) or {}
+                if args.resume and previous.get("status") in complete_statuses:
+                    print(f"RESUME: skipping {task_id} status {previous.get('status')}")
                     continue
-                except Exception as exc:
-                    state["tasks"][task_id].update({
-                        "status": "failed",
-                        "prompt_path": prompt_path,
-                        "error": str(exc),
-                        "completed_at": now_utc(),
-                    })
-                    checkpoint_state(run_dir, state)
-                    raise
-            prompt_path = None
-            planned_worktree = worktree_dir / sanitize_worktree_name(branch)
-            state["tasks"][task_id] = {
-                "status": "running",
-                "wave": int(task.get("wave")),
-                "branch": branch,
-                "worktree": str(planned_worktree),
-                "prompt_path": None,
-                "task_file": task.get("task_file"),
-                "reused_worktree": False,
-                "started_at": state["created_at"],
-            }
-            checkpoint_state(run_dir, state)
-            try:
-                prompt_path = write_task_artifacts(run_dir, plan_path, task)
-                worktree_path, reused = prepare_worktree(
-                    repo,
-                    worktree_dir,
-                    branch,
-                    args.base_ref,
-                    args.reuse_worktrees,
-                    args.dry_run,
-                )
-                status = "planned" if args.dry_run else "worktree_ready"
-                state["tasks"][task_id].update({
-                    "status": status,
-                    "worktree": str(worktree_path),
-                    "prompt_path": prompt_path,
-                    "reused_worktree": reused,
-                    "completed_at": now_utc(),
-                })
-                checkpoint_state(run_dir, state)
-                if args.allow_codex and not args.dry_run:
-                    task_dir = run_dir / "tasks" / task_id
-                    codex = run_codex_task(args, worktree_path, prompt_path, task_dir)
-                    state["tasks"][task_id]["codex"] = codex
-                    checkpoint_state(run_dir, state)
-                    if codex["returncode"]:
-                        raise RuntimeError(f"codex exited {codex['returncode']}")
-                    verify = verification_results(task.get("verification_commands", []), worktree_path)
-                    state["tasks"][task_id]["verification"] = verify
-                    checkpoint_state(run_dir, state)
-                    failed = failed_verification(verify)
-                    if failed:
-                        raise RuntimeError(f"verification failed: {failed['command']}")
-                    files = changed_files(worktree_path)
-                    state["tasks"][task_id].update({
-                        "status": "implemented",
-                        "changed_files": files,
-                        "completed_at": now_utc(),
-                    })
-                    checkpoint_state(run_dir, state)
-                    if args.allow_pr:
-                        if not files:
-                            state["tasks"][task_id].update({
-                                "status": "no_changes",
-                                "completed_at": now_utc(),
-                            })
-                            checkpoint_state(run_dir, state)
-                        else:
-                            commit_sha = commit_task(worktree_path, task, files)
-                            push_branch(worktree_path, branch)
-                            pr = create_task_pr(args, worktree_path, task, branch, pr_base_branch, verify)
-                            state["tasks"][task_id].update({
-                                "status": "pr_ready",
-                                "commit_sha": commit_sha,
-                                "pr_url": pr["url"],
-                                "pr_number": pr["number"],
-                                "completed_at": now_utc(),
-                            })
-                            checkpoint_state(run_dir, state)
-                            if args.allow_review_request:
-                                requests = request_review_comments(args, worktree_path, pr, review_agents(args.review_agents))
-                                state["tasks"][task_id].update({
-                                    "review_requested_at": now_utc(),
-                                    "review_requests": requests,
-                                    "completed_at": now_utc(),
-                                })
-                                checkpoint_state(run_dir, state)
-                            if merge_enabled:
-                                merge = run_merge_gate(
-                                    args,
-                                    worktree_path,
-                                    task_dir,
-                                    pr,
-                                    commit_sha,
-                                    state["tasks"][task_id].get("review_requested_at") if args.allow_review_request else None,
-                                )
-                                state["tasks"][task_id]["merge"] = merge
-                                checkpoint_state(run_dir, state)
-                                if merge["returncode"]:
-                                    raise RuntimeError(f"merge gate exited {merge['returncode']}")
-                                state["tasks"][task_id].update({
-                                    "status": "merged",
-                                    "merged_at": now_utc(),
-                                    "completed_at": now_utc(),
-                                })
-                                checkpoint_state(run_dir, state)
-            except Exception as exc:
-                state["tasks"][task_id].update({
-                    "status": "failed",
-                    "prompt_path": prompt_path,
-                    "error": str(exc),
-                    "completed_at": now_utc(),
-                })
-                checkpoint_state(run_dir, state)
-                raise
-            prefix = "DRY-RUN: would prepare" if args.dry_run else "prepared"
-            print(f"{prefix} {task_id} branch {branch} worktree {worktree_path}")
-            print(f"NEXT: task prompt {prompt_path}")
-            if args.allow_codex and args.dry_run:
-                print(f"DRY-RUN: would run codex for {task_id}")
+                if args.resume and merge_enabled and previous.get("status") == "pr_ready":
+                    continue
+                pending.append(tasks_by_id[task_id])
+
+            results = []
+            if len(pending) == 1 or args.max_parallel == 1:
+                for item in pending:
+                    results.append(run_task(
+                        item,
+                        args,
+                        repo,
+                        worktree_dir,
+                        args.base_ref,
+                        run_dir,
+                        plan_path,
+                        state,
+                        state_lock,
+                        pr_base_branch,
+                    ))
+            elif pending:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(args.max_parallel, len(pending))) as executor:
+                    futures = [
+                        executor.submit(
+                            run_task,
+                            item,
+                            args,
+                            repo,
+                            worktree_dir,
+                            args.base_ref,
+                            run_dir,
+                            plan_path,
+                            state,
+                            state_lock,
+                            pr_base_branch,
+                        )
+                        for item in pending
+                    ]
+                    results = [future.result() for future in concurrent.futures.as_completed(futures)]
+
+            failed = [item for item in results if item.get("status") == "failed"]
+            if failed:
+                for item in failed:
+                    print(f"{item.get('id', item.get('branch', 'task'))} failed: {item.get('error', 'unknown error')}", file=sys.stderr)
+                raise RuntimeError(f"wave {wave_number} failed; later waves blocked")
+
+            if merge_enabled and not args.dry_run:
+                for task_id in wave.get("integration_order", wave_task_ids):
+                    if task_id in selected_task_set:
+                        merge_ready_task(tasks_by_id[task_id], args, run_dir, state, state_lock)
 
         print(f"run_dir={run_dir}")
         return 0

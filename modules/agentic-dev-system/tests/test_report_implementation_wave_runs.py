@@ -158,6 +158,7 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
                     "review_agents": "codex,copilot",
                     "allow_merge": True,
                     "merge_method": "squash",
+                    "max_parallel": 3,
                     "delete_branch": True,
                 },
                 "tasks": {
@@ -245,6 +246,7 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertIn("--allow-codex --allow-pr", resume)
         self.assertIn("--allow-review-request --review-agents codex,copilot", resume)
         self.assertIn("--allow-merge --merge-method squash --delete-branch", resume)
+        self.assertIn("--max-parallel 3", resume)
         self.assertIn("--resume --reuse-worktrees", resume)
         self.assertIn("# Implementation Wave Run Report", markdown)
         self.assertIn("repo-20260529T120000Z", markdown)

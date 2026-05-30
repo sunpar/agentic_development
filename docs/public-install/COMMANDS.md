@@ -49,7 +49,7 @@ python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py 
 python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py \
   docs/agentic-system/implementation/implementation-plan.json \
   --wave 1 \
-  --task TASK-001 \
+  --max-parallel 2 \
   --worktree-dir ~/.codex/worktrees/implementation \
   --base-ref HEAD \
   --allow-codex
@@ -103,7 +103,7 @@ python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py 
   --cleanup-older-than-days 30
 ```
 
-The Markdown report lists exact resume commands for failed tasks when run state includes the implementation plan, selected wave, task id, worktree root, and saved execution options such as Codex, PR, review-request, and merge flags.
+The Markdown report lists exact resume commands for failed tasks when run state includes the implementation plan, selected wave, task id, worktree root, and saved execution options such as `--max-parallel`, Codex, PR, review-request, and merge flags.
 
 ## End-To-End Wrapper
 

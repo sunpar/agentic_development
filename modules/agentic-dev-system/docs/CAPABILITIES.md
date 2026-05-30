@@ -11,9 +11,9 @@ The Agentic Development System supports the full local Codex development loop: r
 | Repository intake | Detect repo structure, docs, source roots, tests, CI files, schemas, APIs, CLIs, jobs, config, and package manifests | `repo-context-map`, `detect_repo_context.py`, `detect_repo_inventory.py`, `codebase-deep-analyzer` |
 | Acceptance and planning | Turn requirements into acceptance criteria, epics, PR-sized tasks, task files, CSVs, dependencies, waves, and validation commands | `acceptance-test-writer`, `task-generator`, `emit_tasks_csv.py`, `validate_plan.py` |
 | Scope and wave validation | Check task size, write sets, dependencies, parallel safety, output quality, and schema validity | `task-scope-validator`, `wave-validator`, `agent-output-evaluator`, `validate_slice_plan.py`, `validate_feature_model.py` |
-| Isolated implementation | Create task worktrees, execute one task at a time, require TDD, capture baseline and completion notes | `create_task_worktree.py`, `task-implementor`, `test-baseline` |
+| Isolated implementation | Create task worktrees, execute generated task waves with bounded same-wave parallelism, require TDD, capture baseline and completion notes | `orchestrate_implementation_waves.py`, `create_task_worktree.py`, `task-implementor`, `test-baseline` |
 | Task review | Review completed implementation against exact task spec, classify findings by severity, and require validation evidence | `task-reviewer`, `api-contract-review`, `dependency-change-review`, `deslop` |
-| Integration | Plan integration wave-by-wave, merge branches only after explicit approval, and run post-wave checks | `integration-merge-manager`, `merge_wave.py` |
+| Integration | Plan integration wave-by-wave, merge branches only after explicit approval, and run post-wave checks | `merge_wave.py` |
 | Feature modeling | Build and refresh evidence-backed feature models from repo inventory, docs, code paths, tests, risks, and unknowns | `feature-model-builder`, `feature-model-refresh`, `build_feature_model.py` |
 | Slice generation | Break existing codebase features into bounded review/refactor slices with explicit read/write sets and invariants | `feature-slice-generator`, `generate_slice_plan.py`, `emit_slices_csv.py` |
 | Slice execution | Review one slice, apply only valid findings, simplify behavior-preservingly, verify, and write completion notes | `slice-review-workflow`, `slice-refactor-workflow`, `run_slice_with_codex.py` |
@@ -21,7 +21,7 @@ The Agentic Development System supports the full local Codex development loop: r
 | PR lifecycle | Commit focused changes, push branches, create or update PRs, and generate reviewer-useful PR bodies | `commit-pr`, `commit_push_pr.py`, `slice-pr-lifecycle`, `pr_lifecycle.py` |
 | Agent review | Request Codex/Copilot review, poll comments, normalize actionable feedback, and create scoped follow-up prompts | `request-agent-review`, `request_review_and_poll.py`, `slice-agent-review-loop`, `poll_review_comments.py`, `address_review_comments_prompt.py` |
 | CI repair and merge handoff | Inspect CI, repair failures minimally, and leave merge execution behind explicit authorization plus separately verified review gates | `slice-ci-debug-and-merge`, `ci_debug_and_merge.py` |
-| Cleanup and prose quality | Remove AI-looking slop, vague comments, duplicated prose, and needless abstractions without changing behavior | `deslop`, `codebase-deslop`, `deslop_check.py` |
+| Cleanup and prose quality | Remove AI-looking slop, vague comments, repeated text, and avoidable complexity without changing behavior | `deslop`, `codebase-deslop`, `deslop_check.py` |
 | Release follow-up | Write release notes, migration notes, refreshed feature models, and follow-up task lists after integration | `release-notes-and-migration`, `feature-model-refresh` |
 | Packaging | Create clean upload zips without backups, caches, bytecode, or local junk | `package_upload.py`, workspace package scripts |
 
@@ -80,6 +80,7 @@ CI debugging is intended to be minimal and evidence-first. Merge remains disable
 | Capability | Status |
 | --- | --- |
 | Build task planning, validation fixtures, worktree creation, PR helper scripts | Implemented local helper coverage |
+| Implementation wave orchestration | Implemented as a resumable local state machine with `--max-parallel`, per-task worktrees, external logs, PR/review/merge opt-ins, and wave failure blocking |
 | Repository inventory, feature model skeletons, slice generation, schema validation | Implemented local helper coverage |
 | Slice wave orchestration | Implemented as a resumable local state machine with `--max-parallel`, per-slice worktrees, external logs, and wave failure blocking |
 | PR review polling | Merge gate checks GraphQL review threads before auto-merge; standalone polling helpers remain basic |
