@@ -278,6 +278,7 @@ def write_summary(run_dir, state):
                 "branch": item.get("branch"),
                 "worktree": item.get("worktree"),
                 "prompt_path": item.get("prompt_path"),
+                "error": item.get("error"),
             }
             for task_id, item in sorted(tasks.items())
         ],
@@ -295,8 +296,17 @@ def write_summary(run_dir, state):
         "",
     ]
     for item in summary["tasks"]:
-        lines.append(f"- {item['id']}: {item['status']} `{item['branch']}` -> {item['worktree']}")
+        line = f"- {item['id']}: {item['status']} `{item['branch']}` -> {item['worktree']}"
+        if item.get("error"):
+            line += f"; error={item['error']}"
+        lines.append(line)
     (run_dir / "run-summary.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def checkpoint_state(run_dir, state):
+    state["updated_at"] = now_utc()
+    write_json(run_dir / "run-state.json", state)
+    write_summary(run_dir, state)
 
 
 def initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, dry_run):
@@ -363,37 +373,57 @@ def main():
         run_dir.mkdir(parents=True, exist_ok=True)
         worktree_dir = Path(args.worktree_dir).expanduser().resolve()
         state = initial_state(repo, run_dir, plan_path, file_sha256(plan_path), selected_wave_numbers, args.dry_run)
+        checkpoint_state(run_dir, state)
 
         print(f"implementation_waves={selected_wave_numbers} tasks={len(tasks)} dry_run={args.dry_run}")
         for task in tasks:
             branch = task.get("branch") or f"agentic-task-{task['id'].lower()}"
-            prompt_path = write_task_artifacts(run_dir, plan_path, task)
-            worktree_path, reused = prepare_worktree(
-                repo,
-                worktree_dir,
-                branch,
-                args.base_ref,
-                args.reuse_worktrees,
-                args.dry_run,
-            )
-            status = "planned" if args.dry_run else "worktree_ready"
-            state["tasks"][task["id"]] = {
-                "status": status,
+            task_id = task["id"]
+            prompt_path = None
+            planned_worktree = worktree_dir / sanitize_worktree_name(branch)
+            state["tasks"][task_id] = {
+                "status": "running",
                 "wave": int(task.get("wave")),
                 "branch": branch,
-                "worktree": str(worktree_path),
-                "prompt_path": prompt_path,
+                "worktree": str(planned_worktree),
+                "prompt_path": None,
                 "task_file": task.get("task_file"),
-                "reused_worktree": reused,
+                "reused_worktree": False,
                 "started_at": state["created_at"],
-                "completed_at": now_utc(),
             }
+            checkpoint_state(run_dir, state)
+            try:
+                prompt_path = write_task_artifacts(run_dir, plan_path, task)
+                worktree_path, reused = prepare_worktree(
+                    repo,
+                    worktree_dir,
+                    branch,
+                    args.base_ref,
+                    args.reuse_worktrees,
+                    args.dry_run,
+                )
+                status = "planned" if args.dry_run else "worktree_ready"
+                state["tasks"][task_id].update({
+                    "status": status,
+                    "worktree": str(worktree_path),
+                    "prompt_path": prompt_path,
+                    "reused_worktree": reused,
+                    "completed_at": now_utc(),
+                })
+                checkpoint_state(run_dir, state)
+            except Exception as exc:
+                state["tasks"][task_id].update({
+                    "status": "failed",
+                    "prompt_path": prompt_path,
+                    "error": str(exc),
+                    "completed_at": now_utc(),
+                })
+                checkpoint_state(run_dir, state)
+                raise
             prefix = "DRY-RUN: would prepare" if args.dry_run else "prepared"
-            print(f"{prefix} {task['id']} branch {branch} worktree {worktree_path}")
+            print(f"{prefix} {task_id} branch {branch} worktree {worktree_path}")
             print(f"NEXT: task prompt {prompt_path}")
 
-        write_json(run_dir / "run-state.json", state)
-        write_summary(run_dir, state)
         print(f"run_dir={run_dir}")
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI reports exact failure.

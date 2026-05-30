@@ -60,6 +60,7 @@ python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py 
 ```
 
 The implementation-wave executor prepares task worktrees and writes run state under `~/.codex/runs/implementation-waves/` by default. It does not run Codex, create PRs, request reviews, or merge.
+It checkpoints `run-state.json`, `run-summary.json`, and `run-summary.md` at run start and after each task, so partial preparation failures keep completed task state and the failing task error in the external run directory.
 The implementation-wave reporter scans historical run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals selected waves, tasks, task statuses, dry-run counts, failed tasks, branches, worktrees, and prompt paths.
 Cleanup mode lists matching artifacts with `--dry-run`; actual removal requires `--cleanup-artifacts --confirm-cleanup`. Run directories are only considered when they contain `run-state.json`, and worktree cleanup scans direct children of `--worktree-dir`.
 

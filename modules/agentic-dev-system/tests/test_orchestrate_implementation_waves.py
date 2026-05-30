@@ -308,6 +308,43 @@ class ImplementationWaveExecutorTests(unittest.TestCase):
             self.assertFalse(old_worktree.exists())
             self.assertNotIn(str(old_worktree), git(repo, "worktree", "list", "--porcelain").stdout)
 
+    def test_failure_after_partial_prepare_writes_checkpoint_and_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            write_plan(plan, [
+                task("TASK-001", 1, "feature/task-001"),
+                task("TASK-002", 1, "feature/task-002"),
+            ])
+            git(repo, "branch", "feature/task-002", "HEAD")
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+            ], cwd=repo)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("branch already exists: feature/task-002", result.stderr + result.stdout)
+            self.assertTrue((worktrees / "feature-task-001").exists())
+            state = json.loads((run_dir / "run-state.json").read_text())
+            summary = json.loads((run_dir / "run-summary.json").read_text())
+            self.assertEqual(state["tasks"]["TASK-001"]["status"], "worktree_ready")
+            self.assertEqual(state["tasks"]["TASK-002"]["status"], "failed")
+            self.assertIn("branch already exists", state["tasks"]["TASK-002"]["error"])
+            self.assertEqual(summary["totals"]["by_status"]["worktree_ready"], 1)
+            self.assertEqual(summary["totals"]["by_status"]["failed"], 1)
+            self.assertIn("branch already exists", summary["tasks"][1]["error"])
+            self.assertIn("TASK-002", (run_dir / "run-summary.md").read_text())
+
 
 if __name__ == "__main__":
     unittest.main()
