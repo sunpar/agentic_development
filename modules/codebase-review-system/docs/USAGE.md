@@ -179,7 +179,7 @@ python3 ~/.codex/codebase-review-factory/scripts/report_codebase_review_runs.py 
   --output-md ~/.codex/runs/codebase-review/report.md
 ```
 
-The aggregate report scans direct child run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals waves, slices, slice statuses, failed slices, and PR numbers across runs. When plan and worktree metadata is available, failed slices include a resume command with the saved slice plan, waves file, run directory, worktree root, saved execution options such as setup, PR, review-request, and merge flags, and `--resume --reuse-worktrees`.
+The aggregate report scans direct child run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals waves, slices, slice statuses, failed slices, and PR counts across runs. Per-run entries still list exact PR numbers. When plan and worktree metadata is available, failed slices include a resume command with the saved slice plan, waves file, run directory, worktree root, saved execution options such as setup, PR, review-request, and merge flags, and `--resume --reuse-worktrees`.
 
 List old external run directories and slice worktrees without removing anything:
 

@@ -103,6 +103,7 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
         self.assertEqual(aggregate['totals']['runs'], 2)
         self.assertEqual(aggregate['totals']['waves'], 2)
         self.assertEqual(aggregate['totals']['slices'], 3)
+        self.assertEqual(aggregate['totals']['prs'], 2)
         self.assertEqual(aggregate['totals']['by_status']['succeeded'], 1)
         self.assertEqual(aggregate['totals']['by_status']['failed'], 1)
         self.assertEqual(aggregate['totals']['by_status']['pr_ready'], 1)
@@ -123,6 +124,7 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
         self.assertIn('--resume --reuse-worktrees', resume)
         self.assertIn('## Runs', markdown)
         self.assertIn('repo-20260529T120000Z', markdown)
+        self.assertIn('- PRs: 2', markdown)
         self.assertIn('failed: 1', markdown)
         self.assertIn('Resume:', markdown)
 
