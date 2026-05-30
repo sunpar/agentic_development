@@ -54,6 +54,7 @@ The generator writes:
 Use `--feature FEATURE-ID` to generate tasks for one feature, and `--dry-run` to print JSON without writing files.
 
 `orchestrate_implementation_waves.py` prepares task worktrees, emits per-task prompts, and writes external run state under `~/.codex/runs/implementation-waves/`. It checkpoints run state and summaries at run start and after each task, so partial preparation failures preserve completed task state and the failing task error. It does not run Codex, create PRs, request reviews, or merge.
+Run summaries include the implementation plan path and hash, selected task ids, per-task wave numbers, branches, worktrees, prompt paths, statuses, and errors.
 
 Resume a partially prepared implementation wave:
 
