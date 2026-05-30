@@ -168,7 +168,7 @@ The wave orchestrator writes run state outside the target repository by default 
 
 Use repeatable `--setup-command` flags for repo-specific worktree setup such as dependency installation. Setup commands run inside each slice worktree before Codex and before verification commands, with `.venv/bin` and `frontend/node_modules/.bin` placed first on `PATH`.
 
-Each orchestration run writes `run-summary.json` and `run-summary.md` beside `run-state.json`. The summary includes plan and waves paths/hashes, slice branch bindings, wave status, slice status totals, worktree paths, PR numbers when available, and slice errors when a wave blocks.
+Each orchestration run writes `run-summary.json` and `run-summary.md` beside `run-state.json`. The summary includes plan and waves paths/hashes, slice branch bindings, wave status, slice status totals, worktree paths, PR numbers when available, review-request records, review-gate timestamps, review-repair attempts, merge timestamps, and slice errors when a wave blocks.
 
 Aggregate historical runs:
 
@@ -179,7 +179,7 @@ python3 ~/.codex/codebase-review-factory/scripts/report_codebase_review_runs.py 
   --output-md ~/.codex/runs/codebase-review/report.md
 ```
 
-The aggregate report scans direct child run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals waves, slices, slice statuses, failed slices, and PR counts across runs. Per-run entries still list exact PR numbers. When plan and worktree metadata is available, failed slices include a resume command with the saved slice plan, waves file, run directory, worktree root, saved execution options such as setup, PR, review-request, and merge flags, and `--resume --reuse-worktrees`.
+The aggregate report scans direct child run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals waves, slices, slice statuses, failed slices, PR counts, review-request counts, and merged-slice counts across runs. Per-run entries still list exact PR numbers, review-request totals, and merge totals when present. When plan and worktree metadata is available, failed slices include a resume command with the saved slice plan, waves file, run directory, worktree root, saved execution options such as setup, PR, review-request, and merge flags, and `--resume --reuse-worktrees`.
 
 List old external run directories and slice worktrees without removing anything:
 
