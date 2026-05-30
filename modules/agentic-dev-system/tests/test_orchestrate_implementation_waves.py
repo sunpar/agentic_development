@@ -49,6 +49,13 @@ def fake_codex_bin(bin_dir, body):
     return path
 
 
+def fake_gh_bin(bin_dir, body):
+    path = Path(bin_dir) / "gh"
+    path.write_text("#!/usr/bin/env python3\n" + body.strip() + "\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
 def task(task_id, wave, branch=None, deps=None):
     return {
         "id": task_id,
@@ -71,6 +78,14 @@ def task(task_id, wave, branch=None, deps=None):
         "rollback_notes": "Revert task branch.",
         "task_file": f"tasks/{task_id}.md",
     }
+
+
+def add_bare_origin(td, repo):
+    remote = Path(td) / "origin.git"
+    git(remote.parent, "init", "--bare", str(remote))
+    git(repo, "remote", "add", "origin", str(remote))
+    git(repo, "push", "-u", "origin", "main")
+    return remote
 
 
 def write_plan(path, tasks):
@@ -295,6 +310,77 @@ pathlib.Path({str(marker)!r}).write_text('ran', encoding='utf-8')
             self.assertFalse(worktrees.exists())
             state = json.loads((run_dir / "run-state.json").read_text())
             self.assertEqual(state["tasks"]["TASK-001"]["status"], "planned")
+
+    def test_allow_pr_commits_pushes_and_creates_pr_after_codex(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            add_bare_origin(td, repo)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            bin_dir = Path(td) / "bin"
+            bin_dir.mkdir()
+            codex = fake_codex_bin(bin_dir, """
+import pathlib
+pathlib.Path('src').mkdir(exist_ok=True)
+pathlib.Path('src/task-001.py').write_text('implemented\\n', encoding='utf-8')
+""")
+            gh_log = Path(td) / "gh-calls.log"
+            gh = fake_gh_bin(bin_dir, f"""
+import pathlib
+import sys
+pathlib.Path({str(gh_log)!r}).write_text(' '.join(sys.argv[1:]), encoding='utf-8')
+print('https://github.com/example/repo/pull/123')
+""")
+            item = task("TASK-001", 1, "feature/task-001-core-flow")
+            item["verification_commands"] = ["python3 -c \"from pathlib import Path; assert Path('src/task-001.py').exists()\""]
+            write_plan(plan, [item])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--allow-pr",
+                "--codex-bin",
+                str(codex),
+                "--gh-bin",
+                str(gh),
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            worktree = worktrees / "feature-task-001-core-flow"
+            self.assertEqual(git(worktree, "log", "-1", "--pretty=%s").stdout.strip(), "TASK-001: Implement TASK-001")
+            self.assertIn("feature/task-001-core-flow", git(repo, "ls-remote", "--heads", "origin").stdout)
+            self.assertIn("pr create", gh_log.read_text())
+            state = json.loads((run_dir / "run-state.json").read_text())
+            task_state = state["tasks"]["TASK-001"]
+            self.assertEqual(task_state["status"], "pr_ready")
+            self.assertEqual(task_state["pr_number"], 123)
+            self.assertEqual(task_state["pr_url"], "https://github.com/example/repo/pull/123")
+            self.assertTrue(task_state["commit_sha"])
+
+    def test_allow_pr_requires_allow_codex(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            write_plan(plan, [task("TASK-001", 1, "feature/task-001-core-flow")])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--allow-pr",
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--allow-pr requires --allow-codex", result.stderr + result.stdout)
 
     def test_wave_option_limits_prepared_tasks(self):
         with tempfile.TemporaryDirectory() as td:

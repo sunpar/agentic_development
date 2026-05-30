@@ -302,6 +302,74 @@ def changed_files(worktree):
     return files
 
 
+def commit_task(worktree, task, files):
+    if not files:
+        return None
+    add = run_cmd(["git", "add", "--", *files], cwd=worktree)
+    if add.returncode:
+        raise RuntimeError(add.stderr or add.stdout or "git add failed")
+    title = str(task.get("title") or task["id"]).strip()
+    commit = run_cmd(["git", "commit", "-m", f"{task['id']}: {title}"], cwd=worktree)
+    if commit.returncode:
+        raise RuntimeError(commit.stderr or commit.stdout or "git commit failed")
+    head = run_cmd(["git", "rev-parse", "HEAD"], cwd=worktree)
+    if head.returncode:
+        raise RuntimeError(head.stderr or head.stdout or "git rev-parse failed")
+    return head.stdout.strip()
+
+
+def push_branch(worktree, branch):
+    result = run_cmd(["git", "push", "-u", "origin", branch], cwd=worktree)
+    if result.returncode:
+        raise RuntimeError(result.stderr or result.stdout or "git push failed")
+
+
+def pr_body(task, verification):
+    lines = [
+        "## Summary",
+        f"- {task.get('objective') or task.get('title') or task['id']}",
+        "",
+        "## Verification",
+    ]
+    if verification:
+        for item in verification:
+            status = "PASS" if item.get("returncode") == 0 else "FAIL"
+            lines.append(f"- {status}: `{item.get('command')}`")
+    else:
+        lines.append("- No verification commands were declared.")
+    return "\n".join(lines)
+
+
+def parse_pr_number(url):
+    tail = str(url).rstrip("/").split("/")[-1]
+    return int(tail) if tail.isdigit() else None
+
+
+def create_task_pr(args, worktree, task, branch, base_branch, verification):
+    title = str(task.get("title") or task["id"]).strip()
+    cmd = [
+        args.gh_bin,
+        "pr",
+        "create",
+        "--title",
+        title,
+        "--body",
+        pr_body(task, verification),
+        "--base",
+        base_branch,
+        "--head",
+        branch,
+    ]
+    result = run_cmd(cmd, cwd=worktree)
+    if result.returncode:
+        raise RuntimeError(result.stderr or result.stdout or "gh pr create failed")
+    url = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+    return {
+        "url": url,
+        "number": parse_pr_number(url),
+    }
+
+
 def write_task_artifacts(run_dir, plan_path, task):
     task_dir = run_dir / "tasks" / task["id"]
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -376,6 +444,9 @@ def write_summary(run_dir, state):
                 "codex": item.get("codex"),
                 "verification": item.get("verification"),
                 "changed_files": item.get("changed_files"),
+                "commit_sha": item.get("commit_sha"),
+                "pr_url": item.get("pr_url"),
+                "pr_number": item.get("pr_number"),
                 "error": item.get("error"),
             }
             for task_id, item in sorted(tasks.items())
@@ -484,6 +555,9 @@ def parse_args():
     parser.add_argument("--codex-bin", default="codex")
     parser.add_argument("--codex-profile")
     parser.add_argument("--codex-extra-args", default="")
+    parser.add_argument("--allow-pr", action="store_true", help="After successful Codex execution, commit changed files, push the task branch, and create a PR.")
+    parser.add_argument("--gh-bin", default="gh")
+    parser.add_argument("--pr-base")
     parser.add_argument("--cleanup-artifacts", action="store_true", help="List or remove old run directories and task worktrees.")
     parser.add_argument("--cleanup-older-than-days", type=int, default=30)
     parser.add_argument("--confirm-cleanup", action="store_true", help="Required to remove artifacts when --cleanup-artifacts is used without --dry-run.")
@@ -500,11 +574,15 @@ def main():
     if args.max_parallel <= 0:
         print("--max-parallel must be greater than zero", file=sys.stderr)
         return 2
+    if args.allow_pr and not args.allow_codex:
+        print("--allow-pr requires --allow-codex", file=sys.stderr)
+        return 2
     plan_path = Path(args.implementation_plan).resolve()
     try:
         plan = load_json(plan_path)
         validate_or_raise(plan)
         repo = repo_root(".")
+        pr_base_branch = args.pr_base or current_branch(repo) or "main"
         selected = selected_waves(plan, args.wave)
         selected_wave_numbers = [int(wave["wave"]) for wave in selected]
         tasks = selected_tasks(plan, args.wave, args.task_ids)
@@ -585,12 +663,32 @@ def main():
                     failed = failed_verification(verify)
                     if failed:
                         raise RuntimeError(f"verification failed: {failed['command']}")
+                    files = changed_files(worktree_path)
                     state["tasks"][task_id].update({
                         "status": "implemented",
-                        "changed_files": changed_files(worktree_path),
+                        "changed_files": files,
                         "completed_at": now_utc(),
                     })
                     checkpoint_state(run_dir, state)
+                    if args.allow_pr:
+                        if not files:
+                            state["tasks"][task_id].update({
+                                "status": "no_changes",
+                                "completed_at": now_utc(),
+                            })
+                            checkpoint_state(run_dir, state)
+                        else:
+                            commit_sha = commit_task(worktree_path, task, files)
+                            push_branch(worktree_path, branch)
+                            pr = create_task_pr(args, worktree_path, task, branch, pr_base_branch, verify)
+                            state["tasks"][task_id].update({
+                                "status": "pr_ready",
+                                "commit_sha": commit_sha,
+                                "pr_url": pr["url"],
+                                "pr_number": pr["number"],
+                                "completed_at": now_utc(),
+                            })
+                            checkpoint_state(run_dir, state)
             except Exception as exc:
                 state["tasks"][task_id].update({
                     "status": "failed",
