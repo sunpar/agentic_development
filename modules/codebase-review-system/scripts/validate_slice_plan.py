@@ -40,6 +40,7 @@ SLICE_TYPES = {
     'refactor-dead-code',
 }
 RISKS = {'low', 'medium', 'high', 'critical'}
+PROTECTED_BRANCH_NAMES = {'main', 'master', 'develop', 'dev', 'trunk'}
 
 
 def unsafe_path(path):
@@ -95,7 +96,7 @@ def find_cycle(graph):
     return None
 
 
-def validate_slice(i, s, ids, errors):
+def validate_slice(i, s, ids, branch_owner, errors):
     errors += required(s, REQ, f'slices[{i}]')
     sid = s.get('id', '')
     if not sid or ' ' in sid:
@@ -140,6 +141,15 @@ def validate_slice(i, s, ids, errors):
     br = s.get('branch', '')
     if not slug_safe(br):
         errors.append(f'{sid}.branch unsafe')
+    branch = str(br or '').strip()
+    if branch.lower() in PROTECTED_BRANCH_NAMES:
+        errors.append(f'{sid}.branch uses protected branch name {branch}')
+    if branch:
+        previous = branch_owner.get(branch)
+        if previous:
+            errors.append(f'duplicate slice branch {branch}: {previous} and {sid}')
+        else:
+            branch_owner[branch] = sid
 
 
 def validate_waves(data, slices, by_id, errors):
@@ -205,11 +215,12 @@ def validate(data):
         return ['slices must be nonempty list']
 
     ids = set()
+    branch_owner = {}
     for i, s in enumerate(slices):
         if not isinstance(s, dict):
             errors.append(f'slices[{i}] must be object')
             continue
-        validate_slice(i, s, ids, errors)
+        validate_slice(i, s, ids, branch_owner, errors)
 
     by_id = {s.get('id'): s for s in slices if isinstance(s, dict) and s.get('id')}
     for s in slices:
