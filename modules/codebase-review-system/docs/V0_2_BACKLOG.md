@@ -4,6 +4,7 @@ The current codebase-intelligence module is a v0.1 scaffold. These items are int
 
 ## Feature Implementation Flow
 
+- Implemented in `detect_repo_inventory.py`: stable inventory ordering and package tool inference from common manifests and lockfiles.
 - Implemented in `feature_task_generator.py`: emits epics, milestones, releases, PR-sized implementation tasks, task Markdown files, tasks CSV, and waves from a feature model.
 - Generated tasks include TDD plans, context bundles, write scopes, dependencies, parallel conflicts, verification commands, and acceptance criteria.
 - Feature implementation tasks are separate from codebase review/refactor slices.
