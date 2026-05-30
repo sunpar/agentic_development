@@ -62,6 +62,7 @@ python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py 
 ```
 
 The implementation-wave executor prepares task worktrees and writes run state under `~/.codex/runs/implementation-waves/` by default. It does not run Codex, create PRs, request reviews, or merge.
+`validate_plan.py` rejects duplicate task branches, protected branch names, invalid Git refs, unsafe same-wave dependencies, and same-wave write conflicts before worktrees are prepared.
 It checkpoints `run-state.json`, `run-summary.json`, and `run-summary.md` at run start and after each task, so partial preparation failures keep completed task state and the failing task error in the external run directory.
 Run summaries include the implementation plan path and hash, selected task ids, per-task wave numbers, branches, worktrees, prompt paths, statuses, and errors.
 Resume mode reloads the existing run state, verifies the repo, implementation plan path/hash, selected waves, and dry-run mode, skips already prepared tasks, and retries failed or missing tasks.

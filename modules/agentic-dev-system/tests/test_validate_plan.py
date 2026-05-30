@@ -196,6 +196,32 @@ class ValidatePlanTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertTrue(any('invalid branch' in e for e in payload['errors']))
 
+    def test_duplicate_task_branches_are_invalid(self):
+        plan = self.minimal_plan(
+            [
+                self.minimal_task('T1', 1, branch='feature/shared'),
+                self.minimal_task('T2', 2, branch='feature/shared', dependencies=['T1']),
+            ],
+            [
+                {'wave': 1, 'task_ids': ['T1'], 'post_wave_verification': ['pytest']},
+                {'wave': 2, 'task_ids': ['T2'], 'post_wave_verification': ['pytest']},
+            ],
+        )
+        result = self.run_script(self.write_plan(plan))
+        self.assertNotEqual(result.returncode, 0)
+        payload = json.loads(result.stdout)
+        self.assertTrue(any('duplicate task branch' in e for e in payload['errors']))
+
+    def test_protected_task_branch_names_are_invalid(self):
+        plan = self.minimal_plan(
+            [self.minimal_task('T1', 1, branch='main')],
+            [{'wave': 1, 'task_ids': ['T1'], 'post_wave_verification': ['pytest']}],
+        )
+        result = self.run_script(self.write_plan(plan))
+        self.assertNotEqual(result.returncode, 0)
+        payload = json.loads(result.stdout)
+        self.assertTrue(any('protected branch name' in e for e in payload['errors']))
+
     def test_one_way_parallel_conflict_blocks_same_wave(self):
         plan = self.minimal_plan(
             [
