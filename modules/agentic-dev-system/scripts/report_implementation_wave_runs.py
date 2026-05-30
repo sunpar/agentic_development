@@ -41,8 +41,30 @@ def sorted_task_items(mapping):
     ]
 
 
+def sorted_wave_items(mapping):
+    return [
+        (key, value)
+        for key, value in sorted(
+            (mapping or {}).items(),
+            key=lambda item: (0, int(item[0])) if str(item[0]).isdigit() else (1, str(item[0])),
+        )
+        if isinstance(value, dict)
+    ]
+
+
 def summary_from_state(run_dir):
     state = load_json(run_dir / "run-state.json")
+    waves = [
+        {
+            "wave": item.get("wave", wave_id),
+            "status": item.get("status"),
+            "task_ids": item.get("task_ids", []),
+            "started_at": item.get("started_at"),
+            "completed_at": item.get("completed_at"),
+            "error": item.get("error"),
+        }
+        for wave_id, item in sorted_wave_items(state.get("waves"))
+    ]
     tasks = [
         {
             "id": task_id,
@@ -73,6 +95,7 @@ def summary_from_state(run_dir):
             "tasks": len(tasks),
             "by_status": status_counts(tasks),
         },
+        "waves": waves,
         "tasks": tasks,
     }
 
@@ -125,6 +148,12 @@ def merge_task_details(summary_tasks, state_tasks):
     return merged
 
 
+def merge_wave_details(summary_waves, state_waves):
+    if summary_waves:
+        return summary_waves
+    return state_waves
+
+
 def enrich_summary_from_state(summary, state_summary):
     enriched = dict(summary)
     for key in ("implementation_plan", "selected_task_ids", "selected_waves", "repo", "run_dir", "execution_options"):
@@ -137,6 +166,10 @@ def enrich_summary_from_state(summary, state_summary):
     enriched["tasks"] = merge_task_details(
         [item for item in enriched.get("tasks") or [] if isinstance(item, dict)],
         [item for item in state_summary.get("tasks") or [] if isinstance(item, dict)],
+    )
+    enriched["waves"] = merge_wave_details(
+        [item for item in enriched.get("waves") or [] if isinstance(item, dict)],
+        [item for item in state_summary.get("waves") or [] if isinstance(item, dict)],
     )
     return enriched
 
@@ -235,6 +268,18 @@ def merge_log_paths(tasks):
     return unique_sorted(paths)
 
 
+def failed_wave_numbers(waves):
+    failed = []
+    for item in waves:
+        if str(item.get("status") or "") not in {"failed", "error"}:
+            continue
+        wave = item.get("wave")
+        if isinstance(wave, str) and wave.isdigit():
+            wave = int(wave)
+        failed.append(wave)
+    return failed
+
+
 def load_run_summary(run_dir):
     summary_path = run_dir / "run-summary.json"
     state_path = run_dir / "run-state.json"
@@ -250,11 +295,13 @@ def load_run_summary(run_dir):
         return None
 
     tasks = [item for item in summary.get("tasks") or [] if isinstance(item, dict)]
+    waves = [item for item in summary.get("waves") or [] if isinstance(item, dict)]
     failed_tasks = [
         str(item.get("id"))
         for item in tasks
         if str(item.get("status") or "") in {"failed", "error"}
     ]
+    failed_waves = failed_wave_numbers(waves)
     totals = summary.get("totals") or {}
     selected_waves = list(summary.get("selected_waves") or [])
     prs = pr_numbers(tasks)
@@ -274,7 +321,10 @@ def load_run_summary(run_dir):
             "waves": len(selected_waves),
             "tasks": int(totals.get("tasks") or len(tasks)),
             "by_status": dict(totals.get("by_status") or status_counts(tasks)),
+            "wave_statuses": status_counts(waves),
         },
+        "waves": waves,
+        "failed_waves": failed_waves,
         "failed_tasks": failed_tasks,
         "branches": unique_sorted(item.get("branch") for item in tasks),
         "worktrees": unique_sorted(item.get("worktree") for item in tasks),
@@ -311,6 +361,7 @@ def aggregate_runs(runs_root):
             "prs": sum(len(run["pr_numbers"]) for run in runs),
             "review_requests": sum(run["review_request_count"] for run in runs),
             "merged_tasks": sum(run["merged_tasks"] for run in runs),
+            "failed_waves": sum(len(run["failed_waves"]) for run in runs),
             "by_status": by_status,
         },
         "runs": runs,
@@ -334,6 +385,7 @@ def write_markdown(path, aggregate):
         f"- PRs: {aggregate['totals']['prs']}",
         f"- Review requests: {aggregate['totals']['review_requests']}",
         f"- Merged tasks: {aggregate['totals']['merged_tasks']}",
+        f"- Failed waves: {aggregate['totals']['failed_waves']}",
     ]
     for status, count in sorted(aggregate["totals"]["by_status"].items()):
         lines.append(f"- {status}: {count}")
@@ -349,6 +401,8 @@ def write_markdown(path, aggregate):
             line += "; waves=" + ", ".join(str(wave) for wave in run["selected_waves"])
         if run["failed_tasks"]:
             line += f"; failed={', '.join(run['failed_tasks'])}"
+        if run["failed_waves"]:
+            line += "; failed_waves=" + ", ".join(str(wave) for wave in run["failed_waves"])
         if run["branches"]:
             line += "; branches=" + ", ".join(run["branches"])
         if run["pr_numbers"]:
