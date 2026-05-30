@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, json, shlex, shutil, subprocess
+import argparse, json, shlex, shutil, subprocess, sys
 from pathlib import Path
 MODEL_ARGS=['--model','gpt-5.5','-c','model_reasoning_effort="xhigh"']
 
@@ -15,9 +15,19 @@ def safe_extra_args(value):
                 raise SystemExit(f'unsafe --codex-extra-args config blocked: {nxt}')
     return args
 
+def find_slice(plan, slice_id):
+    for item in plan.get('slices', []):
+        if item.get('id') == slice_id:
+            return item
+    return None
+
 def main():
     ap=argparse.ArgumentParser(description='Run or print Codex prompt for one slice.'); ap.add_argument('slice_plan'); ap.add_argument('slice_id'); ap.add_argument('--codex-profile'); ap.add_argument('--codex-agent'); ap.add_argument('--codex-extra-args', default=''); ap.add_argument('--dry-run',action='store_true'); args=ap.parse_args()
-    s=next(x for x in json.loads(Path(args.slice_plan).read_text())['slices'] if x['id']==args.slice_id)
+    plan=json.loads(Path(args.slice_plan).read_text())
+    s=find_slice(plan, args.slice_id)
+    if not s:
+        print(f'slice {args.slice_id} not found in {args.slice_plan}', file=sys.stderr)
+        return 2
     prompt=f"Use slice-review-workflow and slice-refactor-workflow for {s['id']}. Stay within allowed edit scope: {s['files_allowed_to_edit']}. Verify with: {s['verification_commands']}."
     cmd=['codex','exec'] + MODEL_ARGS
     if args.codex_profile: cmd += ['--profile',args.codex_profile]
