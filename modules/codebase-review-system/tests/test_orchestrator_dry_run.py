@@ -220,6 +220,45 @@ class TestOrchestrator(unittest.TestCase):
         self.assertEqual(item['review_repair_attempts'], [{'attempt': 1, 'status': 'pushed'}])
         self.assertEqual(item['merged_at'], '2026-05-22T13:10:00Z')
 
+    def test_write_run_summary_markdown_reports_review_and_merge_metadata(self):
+        module = load_orchestrator_module()
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / 'run'
+            run_dir.mkdir()
+            summary = module.write_run_summary(run_dir, {
+                'repo': '/tmp/repo',
+                'run_dir': str(run_dir),
+                'waves': {'1': {'status': 'succeeded', 'slice_ids': ['SLICE-001']}},
+                'slices': {
+                    'SLICE-001': {
+                        'status': 'merged',
+                        'branch': 'codebase-review/s1',
+                        'worktree': '/tmp/worktrees/codebase-review-s1',
+                        'pr_number': 123,
+                        'review_requested_at': '2026-05-22T13:00:00Z',
+                        'review_gate_required_at': '2026-05-22T13:01:00Z',
+                        'review_requests': {
+                            'requested_at': '2026-05-22T13:00:00Z',
+                            'agents': {
+                                'codex': {'status': 'completed'},
+                                'copilot': {'status': 'timed_out'},
+                            },
+                        },
+                        'review_repair_attempts': [{'attempt': 1, 'status': 'pushed'}],
+                        'merged_at': '2026-05-22T13:10:00Z',
+                    }
+                },
+            })
+            markdown = (run_dir / 'run-summary.md').read_text()
+
+        self.assertEqual(summary['totals']['prs'], 1)
+        self.assertEqual(summary['totals']['review_requests'], 2)
+        self.assertEqual(summary['totals']['merged_slices'], 1)
+        self.assertIn('- PRs: 1', markdown)
+        self.assertIn('- Review requests: 2', markdown)
+        self.assertIn('- Merged slices: 1', markdown)
+        self.assertIn('SLICE-001: merged PR #123 review_requests=2 review_gate=2026-05-22T13:01:00Z repairs=1 merged_at=2026-05-22T13:10:00Z', markdown)
+
     def test_list_shaped_waves_file(self):
         with tempfile.TemporaryDirectory() as td:
             waves = Path(td) / 'waves.json'
