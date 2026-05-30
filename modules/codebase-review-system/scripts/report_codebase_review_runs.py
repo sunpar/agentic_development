@@ -253,6 +253,7 @@ def aggregate_runs(runs_root):
             'runs': len(runs),
             'waves': sum(run['totals']['waves'] for run in runs),
             'slices': sum(run['totals']['slices'] for run in runs),
+            'prs': sum(len(run['pr_numbers']) for run in runs),
             'by_status': by_status,
         },
         'runs': runs,
@@ -272,6 +273,7 @@ def write_markdown(path, aggregate):
         f'- Runs: {aggregate["totals"]["runs"]}',
         f'- Waves: {aggregate["totals"]["waves"]}',
         f'- Slices: {aggregate["totals"]["slices"]}',
+        f'- PRs: {aggregate["totals"]["prs"]}',
     ]
     for status, count in sorted(aggregate['totals']['by_status'].items()):
         lines.append(f'- {status}: {count}')
