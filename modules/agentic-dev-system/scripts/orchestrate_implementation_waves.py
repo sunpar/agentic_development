@@ -176,14 +176,25 @@ def selected_waves(plan, wave_number):
     return selected
 
 
-def selected_tasks(plan, wave_number):
+def selected_tasks(plan, wave_number, requested_task_ids=None):
     tasks = task_map(plan)
-    out = []
+    selected_ids = []
     for wave in selected_waves(plan, wave_number):
         for task_id in wave.get("task_ids", []):
             if task_id in tasks:
-                out.append(tasks[task_id])
-    return out
+                selected_ids.append(task_id)
+    if requested_task_ids:
+        requested = list(dict.fromkeys(requested_task_ids))
+        for task_id in requested:
+            if task_id not in tasks:
+                raise RuntimeError(f"task {task_id} not found in plan")
+        allowed = set(selected_ids)
+        for task_id in requested:
+            if task_id not in allowed:
+                raise RuntimeError(f"task {task_id} is not in selected wave(s)")
+        requested_set = set(requested)
+        selected_ids = [task_id for task_id in selected_ids if task_id in requested_set]
+    return [tasks[task_id] for task_id in selected_ids]
 
 
 def status_counts(tasks):
@@ -309,7 +320,7 @@ def checkpoint_state(run_dir, state):
     write_summary(run_dir, state)
 
 
-def validate_resume_state(state, repo, plan_path, plan_hash, selected_wave_numbers, dry_run):
+def validate_resume_state(state, repo, plan_path, plan_hash, selected_wave_numbers, selected_task_ids, dry_run):
     if state.get("repo") and Path(state["repo"]).resolve() != repo:
         raise RuntimeError(f"run-state repo mismatch: expected {repo}, got {state.get('repo')}")
     if state.get("implementation_plan") and Path(state["implementation_plan"]).resolve() != plan_path:
@@ -318,13 +329,16 @@ def validate_resume_state(state, repo, plan_path, plan_hash, selected_wave_numbe
         raise RuntimeError("run-state implementation plan hash mismatch")
     if list(state.get("selected_waves") or []) != list(selected_wave_numbers):
         raise RuntimeError("run-state selected waves mismatch")
+    if state.get("selected_task_ids") is not None and list(state.get("selected_task_ids") or []) != list(selected_task_ids):
+        raise RuntimeError("run-state selected tasks mismatch")
     if bool(state.get("dry_run")) != bool(dry_run):
         raise RuntimeError("run-state dry-run mode mismatch")
+    state.setdefault("selected_task_ids", selected_task_ids)
     state.setdefault("tasks", {})
     return state
 
 
-def load_or_initialize_state(run_dir, repo, plan_path, plan_hash, selected_wave_numbers, dry_run, resume):
+def load_or_initialize_state(run_dir, repo, plan_path, plan_hash, selected_wave_numbers, selected_task_ids, dry_run, resume):
     state_path = run_dir / "run-state.json"
     if resume:
         if not state_path.exists():
@@ -335,12 +349,13 @@ def load_or_initialize_state(run_dir, repo, plan_path, plan_hash, selected_wave_
             plan_path,
             plan_hash,
             selected_wave_numbers,
+            selected_task_ids,
             dry_run,
         )
-    return initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, dry_run)
+    return initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, selected_task_ids, dry_run)
 
 
-def initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, dry_run):
+def initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, selected_task_ids, dry_run):
     return {
         "created_at": now_utc(),
         "repo": str(repo),
@@ -348,6 +363,7 @@ def initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, dr
         "implementation_plan": str(plan_path),
         "implementation_plan_sha256": plan_hash,
         "selected_waves": selected_wave_numbers,
+        "selected_task_ids": selected_task_ids,
         "dry_run": dry_run,
         "tasks": {},
     }
@@ -366,6 +382,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Prepare implementation task waves.")
     parser.add_argument("implementation_plan", nargs="?")
     parser.add_argument("--wave", type=int)
+    parser.add_argument("--task", action="append", dest="task_ids", help="Prepare only the named task ID. May be repeated.")
     parser.add_argument("--run-dir")
     parser.add_argument("--runs-root", default=str(Path.home() / ".codex" / "runs" / "implementation-waves"))
     parser.add_argument("--worktree-dir", default=str(Path.home() / ".codex" / "worktrees" / "implementation"))
@@ -397,7 +414,8 @@ def main():
         repo = repo_root(".")
         selected = selected_waves(plan, args.wave)
         selected_wave_numbers = [int(wave["wave"]) for wave in selected]
-        tasks = selected_tasks(plan, args.wave)
+        tasks = selected_tasks(plan, args.wave, args.task_ids)
+        selected_task_ids = [task["id"] for task in tasks]
         repo_name = repo.name
         stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         run_dir = Path(args.run_dir).expanduser() if args.run_dir else Path.home() / ".codex" / "runs" / "implementation-waves" / f"{repo_name}-{stamp}"
@@ -410,6 +428,7 @@ def main():
             plan_path,
             plan_hash,
             selected_wave_numbers,
+            selected_task_ids,
             args.dry_run,
             args.resume,
         )

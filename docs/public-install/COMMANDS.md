@@ -42,6 +42,13 @@ python3 ~/.codex/agentic-dev-system/scripts/report_implementation_wave_runs.py \
 python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py \
   docs/agentic-system/implementation/implementation-plan.json \
   --wave 1 \
+  --task TASK-001 \
+  --worktree-dir ~/.codex/worktrees/implementation \
+  --dry-run
+
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py \
+  docs/agentic-system/implementation/implementation-plan.json \
+  --wave 1 \
   --run-dir ~/.codex/runs/implementation-waves/RUN \
   --worktree-dir ~/.codex/worktrees/implementation \
   --resume \

@@ -189,6 +189,69 @@ class ImplementationWaveExecutorTests(unittest.TestCase):
             state = json.loads((run_dir / "run-state.json").read_text())
             self.assertEqual(list(state["tasks"]), ["TASK-002"])
 
+    def test_task_option_limits_prepared_tasks(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            write_plan(plan, [
+                task("TASK-001", 1),
+                task("TASK-002", 1),
+            ])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--task",
+                "TASK-002",
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(Path(td) / "worktrees"),
+                "--dry-run",
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertNotIn("TASK-001", result.stdout)
+            self.assertIn("TASK-002", result.stdout)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            self.assertEqual(state["selected_task_ids"], ["TASK-002"])
+            self.assertEqual(list(state["tasks"]), ["TASK-002"])
+
+    def test_task_option_rejects_unknown_or_unselected_wave_task(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            write_plan(plan, [
+                task("TASK-001", 1),
+                task("TASK-002", 2, deps=["TASK-001"]),
+            ])
+
+            missing = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--task",
+                "TASK-404",
+                "--dry-run",
+            ], cwd=repo)
+            wrong_wave = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--wave",
+                "2",
+                "--task",
+                "TASK-001",
+                "--dry-run",
+            ], cwd=repo)
+
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("task TASK-404 not found in plan", missing.stderr + missing.stdout)
+            self.assertNotEqual(wrong_wave.returncode, 0)
+            self.assertIn("task TASK-001 is not in selected wave(s)", wrong_wave.stderr + wrong_wave.stdout)
+
     def test_invalid_plan_dependency_fails_before_worktree_creation(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)

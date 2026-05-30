@@ -201,6 +201,7 @@ For implementation waves:
 ```bash
 python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py docs/agentic-system/implementation/implementation-plan.json --wave WAVE-ID --worktree-dir ~/.codex/worktrees/implementation --dry-run
 python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py docs/agentic-system/implementation/implementation-plan.json --wave WAVE-ID --worktree-dir ~/.codex/worktrees/implementation --base-ref HEAD
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py docs/agentic-system/implementation/implementation-plan.json --wave WAVE-ID --task TASK-ID --worktree-dir ~/.codex/worktrees/implementation --dry-run
 python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py docs/agentic-system/implementation/implementation-plan.json --wave WAVE-ID --run-dir ~/.codex/runs/implementation-waves/RUN --worktree-dir ~/.codex/worktrees/implementation --resume --reuse-worktrees
 python3 ~/.codex/agentic-dev-system/scripts/report_implementation_wave_runs.py --runs-root ~/.codex/runs/implementation-waves --output-json ~/.codex/runs/implementation-waves/report.json --output-md ~/.codex/runs/implementation-waves/report.md
 python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py --cleanup-artifacts --dry-run --runs-root ~/.codex/runs/implementation-waves --worktree-dir ~/.codex/worktrees/implementation --cleanup-older-than-days 30

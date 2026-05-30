@@ -68,6 +68,7 @@ python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py 
 ```
 
 Resume mode verifies the saved repo, plan path/hash, selected waves, and dry-run mode before skipping already prepared tasks and retrying failed or missing tasks.
+Use repeatable `--task TASK-ID` with `--wave` to prepare only selected tasks from a wave, preserving plan validation and wave order.
 
 Aggregate historical implementation-wave runs:
 
