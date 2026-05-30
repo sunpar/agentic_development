@@ -49,6 +49,15 @@ python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py 
   --worktree-dir ~/.codex/worktrees/implementation \
   --base-ref HEAD \
   --allow-codex
+
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py \
+  docs/agentic-system/implementation/implementation-plan.json \
+  --wave 1 \
+  --task TASK-001 \
+  --worktree-dir ~/.codex/worktrees/implementation \
+  --base-ref HEAD \
+  --allow-codex \
+  --allow-pr
 ```
 
 The generator writes:
@@ -61,8 +70,8 @@ The generator writes:
 
 Use `--feature FEATURE-ID` to generate tasks for one feature, and `--dry-run` to print JSON without writing files.
 
-`orchestrate_implementation_waves.py` prepares task worktrees, emits per-task prompts, and writes external run state under `~/.codex/runs/implementation-waves/`. Pass `--allow-codex` to run `codex exec` against each task prompt after worktree preparation. It checkpoints run state and summaries at run start and after each task, so partial preparation failures preserve completed task state and the failing task error. It does not commit, push, create PRs, request reviews, or merge.
-Run summaries include the implementation plan path and hash, selected task ids, per-task wave numbers, branches, worktrees, prompt paths, Codex status, verification results, changed files, statuses, and errors.
+`orchestrate_implementation_waves.py` prepares task worktrees, emits per-task prompts, and writes external run state under `~/.codex/runs/implementation-waves/`. Pass `--allow-codex` to run `codex exec` against each task prompt after worktree preparation, and add `--allow-pr` to commit changed files, push the task branch, and create a PR. It checkpoints run state and summaries at run start and after each task, so partial preparation failures preserve completed task state and the failing task error. It does not request reviews or merge.
+Run summaries include the implementation plan path and hash, selected task ids, per-task wave numbers, branches, worktrees, prompt paths, Codex status, verification results, changed files, commit SHAs, PR URLs/numbers, statuses, and errors.
 
 Resume a partially prepared implementation wave:
 
