@@ -11,13 +11,14 @@ The current codebase-intelligence module is a v0.1 scaffold. These items are int
 - Implemented in `orchestrate_implementation_waves.py`: validates generated implementation plans, prepares or dry-runs task worktrees, emits task prompts, and writes external run state and summaries.
 - Implemented opt-in Codex task execution in `orchestrate_implementation_waves.py` with `--allow-codex`, task stdout/stderr logs, verification results, changed-file capture, and dry-run safety.
 - Implemented opt-in task branch PR automation in `orchestrate_implementation_waves.py` with `--allow-pr`, including commit, push, PR creation, commit SHA capture, and PR URL/number capture after successful Codex execution.
+- Implemented opt-in task PR review-request comments in `orchestrate_implementation_waves.py` with `--allow-review-request` and configurable `--review-agents`.
 - Implemented incremental implementation-wave checkpointing: run state and summaries are written at run start and after each task, including failed task errors when preparation stops early.
 - Implemented self-contained implementation-wave summaries with plan path/hash, selected task ids, per-task wave numbers, branches, worktrees, prompt paths, statuses, and errors.
 - Implemented implementation-wave resume: saved run state is bound to repo, plan path/hash, selected waves, and dry-run mode; resume skips already prepared tasks and retries failed or missing tasks.
 - Implemented targeted implementation-wave preparation with repeatable `--task TASK-ID` filtering inside the selected wave.
 - Implemented in `report_implementation_wave_runs.py`: aggregate reporting across multiple historical implementation-wave runs, including dry-run counts, selected waves, task status totals, failed tasks, branches, worktrees, prompt paths, and failed-task resume commands from `run-summary.json` plus `run-state.json` metadata or from `run-state.json` alone.
 - Implemented dry-run-safe cleanup/listing in `orchestrate_implementation_waves.py` for old implementation run directories and task worktrees, with actual removal gated by `--confirm-cleanup`.
-- Remaining follow-up: add opt-in review-request and merge automation for implementation-wave task branches after task PR automation has been dogfooded.
+- Remaining follow-up: add opt-in merge-gate automation for implementation-wave task branches after task PR and review-request automation has been dogfooded.
 
 ## Real Wave Orchestration
 
