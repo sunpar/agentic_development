@@ -49,6 +49,16 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
                 'run_dir': str(first),
                 'slice_plan': '/tmp/repo/docs/agentic-system/review/slice-plan.json',
                 'waves_path': '/tmp/repo/docs/agentic-system/review/waves.json',
+                'execution_options': {
+                    'allow_pr': True,
+                    'allow_review_request': True,
+                    'review_agents': 'codex,copilot',
+                    'allow_merge': True,
+                    'merge_method': 'squash',
+                    'delete_branch': True,
+                    'max_parallel': 999,
+                    'setup_commands': ['make install'],
+                },
                 'waves': {'1': {'status': 'failed', 'slice_ids': ['SLICE-001', 'SLICE-002']}},
                 'slices': {
                     'SLICE-001': {
@@ -105,6 +115,11 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
         self.assertIn('/tmp/repo/docs/agentic-system/review/waves.json', resume)
         self.assertIn(f'--run-dir {first}', resume)
         self.assertIn('--worktree-dir /tmp/worktrees', resume)
+        self.assertIn('--max-parallel 999', resume)
+        self.assertIn("--setup-command 'make install'", resume)
+        self.assertIn('--allow-pr --allow-review-request', resume)
+        self.assertIn('--review-agents codex,copilot', resume)
+        self.assertIn('--allow-merge --merge-method squash --delete-branch', resume)
         self.assertIn('--resume --reuse-worktrees', resume)
         self.assertIn('## Runs', markdown)
         self.assertIn('repo-20260529T120000Z', markdown)

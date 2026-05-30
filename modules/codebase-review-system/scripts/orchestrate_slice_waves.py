@@ -111,6 +111,7 @@ def run_summary(state):
         'slice_plan_sha256': state.get('slice_plan_sha256'),
         'waves_sha256': state.get('waves_sha256'),
         'slice_branches': state.get('slice_branches', {}),
+        'execution_options': state.get('execution_options', {}),
         'totals': {
             'waves': len(waves),
             'slices': len(slices),
@@ -590,7 +591,7 @@ def create_or_reuse_worktree(
     return path, False, reset_info
 
 
-def state_initial(repo, run_dir, slice_plan, waves_path, plan_hash, waves_hash, branches, remote_url):
+def state_initial(repo, run_dir, slice_plan, waves_path, plan_hash, waves_hash, branches, remote_url, execution_opts):
     return {
         'created_at': now_utc(),
         'repo': str(repo),
@@ -601,12 +602,13 @@ def state_initial(repo, run_dir, slice_plan, waves_path, plan_hash, waves_hash, 
         'slice_plan_sha256': plan_hash,
         'waves_sha256': waves_hash,
         'slice_branches': branches,
+        'execution_options': execution_opts,
         'waves': {},
         'slices': {},
     }
 
 
-def validate_or_migrate_state(state, run_dir, repo, slice_plan, waves_path, plan_hash, waves_hash, branches, remote_url):
+def validate_or_migrate_state(state, run_dir, repo, slice_plan, waves_path, plan_hash, waves_hash, branches, remote_url, execution_opts):
     required_binding_keys = {
         'repo_remote_url',
         'slice_plan_sha256',
@@ -644,17 +646,32 @@ def validate_or_migrate_state(state, run_dir, repo, slice_plan, waves_path, plan
     state.setdefault('slice_plan_sha256', plan_hash)
     state.setdefault('waves_sha256', waves_hash)
     state.setdefault('slice_branches', branches)
+    state.setdefault('execution_options', execution_opts)
     state.setdefault('waves', {})
     state.setdefault('slices', {})
     return state
 
 
-def load_state(run_dir, repo, slice_plan, waves_path, resume, plan_hash, waves_hash, branches, remote_url):
+def load_state(run_dir, repo, slice_plan, waves_path, resume, plan_hash, waves_hash, branches, remote_url, execution_opts):
     state_path = run_dir / 'run-state.json'
     if resume and state_path.exists():
         state = load_json(state_path)
-        return validate_or_migrate_state(state, run_dir, repo, slice_plan, waves_path, plan_hash, waves_hash, branches, remote_url)
-    return state_initial(repo, run_dir, slice_plan, waves_path, plan_hash, waves_hash, branches, remote_url)
+        return validate_or_migrate_state(state, run_dir, repo, slice_plan, waves_path, plan_hash, waves_hash, branches, remote_url, execution_opts)
+    return state_initial(repo, run_dir, slice_plan, waves_path, plan_hash, waves_hash, branches, remote_url, execution_opts)
+
+
+def execution_options(args, merge_enabled):
+    return {
+        'allow_pr': bool(args.allow_pr),
+        'allow_review_request': bool(args.allow_review_request),
+        'review_agents': args.review_agents,
+        'allow_merge': bool(merge_enabled),
+        'no_merge': bool(args.no_merge),
+        'merge_method': args.merge_method,
+        'delete_branch': bool(args.delete_branch),
+        'max_parallel': args.max_parallel,
+        'setup_commands': list(args.setup_command or []),
+    }
 
 
 def build_prompt(slice_item, plan_copy, artifact_dir):
@@ -1518,7 +1535,8 @@ def main():
         plan_hash = file_sha256(slice_plan_path)
         waves_hash = file_sha256(waves_path)
         branches = slice_branch_map(plan)
-        state = load_state(run_dir, repo, slice_plan_path, waves_path, args.resume, plan_hash, waves_hash, branches, origin_url(repo))
+        execution_opts = execution_options(args, merge_enabled)
+        state = load_state(run_dir, repo, slice_plan_path, waves_path, args.resume, plan_hash, waves_hash, branches, origin_url(repo), execution_opts)
 
         if (args.allow_pr or args.allow_review_request or merge_enabled) and not command_exists('gh'):
             raise RuntimeError('gh binary not found')
