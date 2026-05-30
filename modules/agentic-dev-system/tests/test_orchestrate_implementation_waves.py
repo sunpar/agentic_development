@@ -252,6 +252,62 @@ print('codex completed task')
             self.assertEqual(summary["totals"]["by_status"]["implemented"], 1)
             self.assertEqual(summary["tasks"][0]["codex"]["returncode"], 0)
 
+    def test_max_parallel_runs_same_wave_tasks_concurrently(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            bin_dir = Path(td) / "bin"
+            starts = Path(td) / "starts"
+            bin_dir.mkdir()
+            starts.mkdir()
+            codex = fake_codex_bin(bin_dir, f"""
+import pathlib
+import sys
+import time
+
+starts = pathlib.Path({str(starts)!r})
+(starts / (pathlib.Path.cwd().name + '.started')).write_text('started', encoding='utf-8')
+deadline = time.time() + 1.5
+while len(list(starts.glob('*.started'))) < 2 and time.time() < deadline:
+    time.sleep(0.02)
+if len(list(starts.glob('*.started'))) < 2:
+    print('parallel peer did not start', file=sys.stderr)
+    raise SystemExit(9)
+pathlib.Path('src').mkdir(exist_ok=True)
+pathlib.Path('src/done.txt').write_text('done\\n', encoding='utf-8')
+""")
+            items = [
+                task("TASK-001", 1, "feature/task-001"),
+                task("TASK-002", 1, "feature/task-002"),
+            ]
+            for item in items:
+                item["verification_commands"] = ["python3 -c \"from pathlib import Path; assert Path('src/done.txt').exists()\""]
+            write_plan(plan, items)
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--codex-bin",
+                str(codex),
+                "--max-parallel",
+                "2",
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            statuses = [state["tasks"][task_id]["status"] for task_id in ["TASK-001", "TASK-002"]]
+            self.assertEqual(statuses, ["implemented", "implemented"])
+
     def test_allow_codex_failure_records_failed_task(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)
@@ -349,6 +405,8 @@ pathlib.Path({str(marker)!r}).write_text('ran', encoding='utf-8')
                 "--allow-merge",
                 "--merge-method",
                 "rebase",
+                "--max-parallel",
+                "2",
                 "--delete-branch",
             ], cwd=repo)
 
@@ -362,6 +420,7 @@ pathlib.Path({str(marker)!r}).write_text('ran', encoding='utf-8')
                 "allow_merge": True,
                 "no_merge": False,
                 "merge_method": "rebase",
+                "max_parallel": 2,
                 "delete_branch": True,
             })
 

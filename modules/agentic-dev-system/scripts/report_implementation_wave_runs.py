@@ -167,6 +167,8 @@ def execution_resume_args(summary):
             args += ["--merge-method", options.get("merge_method")]
         if options.get("delete_branch"):
             args.append("--delete-branch")
+    if options.get("max_parallel") is not None:
+        args += ["--max-parallel", options.get("max_parallel")]
     if options.get("no_merge"):
         args.append("--no-merge")
     return args
