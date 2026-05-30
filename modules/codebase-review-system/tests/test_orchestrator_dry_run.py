@@ -381,6 +381,79 @@ class TestOrchestrator(unittest.TestCase):
             self.assertEqual(summary['slices'][0]['worktree'], str((worktrees / 'codebase-review-s1').resolve()))
             self.assertIn('SLICE-001', (run_dir / 'run-summary.md').read_text())
 
+    def test_run_slice_serializes_worktree_creation(self):
+        with tempfile.TemporaryDirectory() as td:
+            module = load_orchestrator_module()
+            run_dir = Path(td) / 'run'
+            run_dir.mkdir()
+            worktree_dir = Path(td) / 'worktrees'
+            plan = Path(td) / 'slice-plan.json'
+            plan.write_text('{}')
+            state = {'slices': {}}
+            state_lock = threading.Lock()
+            active_lock = threading.Lock()
+            active_creates = 0
+
+            def fake_create(repo, root, branch, base_ref, reuse_worktrees, **kwargs):
+                nonlocal active_creates
+                with active_lock:
+                    active_creates += 1
+                    if active_creates > 1:
+                        active_creates -= 1
+                        raise RuntimeError('concurrent worktree creation')
+                time.sleep(0.05)
+                with active_lock:
+                    active_creates -= 1
+                path = root / branch.replace('/', '-')
+                path.mkdir(parents=True, exist_ok=True)
+                return path, False, None
+
+            module.create_or_reuse_worktree = fake_create
+            module.run_cmd = lambda cmd, cwd=None, timeout=None: types.SimpleNamespace(returncode=0, stdout='abc123\n', stderr='')
+            module.setup_results = lambda commands, worktree: []
+            module.fail_on_verification = lambda results: None
+            module.build_prompt = lambda item, plan_copy, slice_dir: 'prompt'
+            module.codex_command = lambda args, prompt, writable_dirs=None: ['codex', 'exec', prompt]
+            module.move_legacy_slice_artifacts = lambda worktree, sid, slice_dir: []
+            module.changed_files_in_scope = lambda worktree, allowed: []
+            module.verification_results = lambda commands, worktree: []
+            args = types.SimpleNamespace(
+                resume=False,
+                reuse_worktrees=False,
+                setup_command=[],
+                allow_pr=False,
+                allow_review_request=False,
+            )
+            items = [
+                slice_item('SLICE-001', 'codebase-review/s1', 'src/a.txt'),
+                slice_item('SLICE-002', 'codebase-review/s2', 'src/b.txt'),
+            ]
+            results = []
+            threads = [
+                threading.Thread(
+                    target=lambda item=item: results.append(module.run_slice(
+                        item,
+                        args,
+                        Path(td),
+                        worktree_dir,
+                        'HEAD',
+                        run_dir,
+                        plan,
+                        state,
+                        state_lock,
+                        'main',
+                    ))
+                )
+                for item in items
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        statuses = [result['status'] for result in sorted(results, key=lambda item: item['slice_id'])]
+        self.assertEqual(statuses, ['no_changes', 'no_changes'])
+
     def test_cleanup_artifacts_dry_run_lists_old_runs_and_worktrees_without_removing(self):
         with tempfile.TemporaryDirectory() as td:
             runs_root = Path(td) / 'runs'
