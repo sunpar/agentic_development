@@ -83,6 +83,7 @@ class TestSlicePlan(unittest.TestCase):
         self.assertEqual(wave_schema['properties']['slice_ids']['minItems'], 1)
         branch_pattern = props['branch']['pattern']
         self.assertEqual(branch_pattern, r'^(?!/)(?!.*\.\.)[A-Za-z0-9._/-]+$')
+        self.assertEqual(props['branch']['not']['enum'], ['main', 'master', 'develop', 'dev', 'trunk'])
         self.assertIsNotNone(re.match(branch_pattern, 'codebase-review/SLICE-001-review-core-flow'))
         self.assertIsNone(re.match(branch_pattern, '/tmp'))
         self.assertIsNone(re.match(branch_pattern, '../escape'))
