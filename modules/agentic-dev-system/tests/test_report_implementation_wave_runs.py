@@ -56,11 +56,35 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
                     },
                 ],
             }), encoding="utf-8")
+            (first / "run-state.json").write_text(json.dumps({
+                "repo": "/tmp/repo",
+                "run_dir": str(first),
+                "implementation_plan": "/tmp/repo/docs/agentic-system/implementation/implementation-plan.json",
+                "dry_run": True,
+                "selected_waves": [1],
+                "selected_task_ids": ["TASK-001", "TASK-002"],
+                "tasks": {
+                    "TASK-001": {
+                        "status": "planned",
+                        "wave": 1,
+                        "branch": "feature/task-001",
+                        "worktree": "/tmp/worktrees/task-001",
+                    },
+                    "TASK-002": {
+                        "status": "failed",
+                        "wave": 1,
+                        "branch": "feature/task-002",
+                        "worktree": "/tmp/worktrees/task-002",
+                    },
+                },
+            }), encoding="utf-8")
             (second / "run-state.json").write_text(json.dumps({
                 "repo": "/tmp/repo",
                 "run_dir": str(second),
+                "implementation_plan": "/tmp/repo/docs/agentic-system/implementation/implementation-plan.json",
                 "dry_run": False,
                 "selected_waves": [2],
+                "selected_task_ids": ["TASK-003", "TASK-004"],
                 "tasks": {
                     "TASK-003": {
                         "status": "worktree_ready",
@@ -107,9 +131,26 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertEqual(aggregate["runs"][0]["failed_tasks"], ["TASK-002"])
         self.assertEqual(aggregate["runs"][1]["failed_tasks"], ["TASK-004"])
         self.assertEqual(aggregate["runs"][1]["branches"], ["feature/task-003", "feature/task-004"])
+        self.assertEqual(len(aggregate["runs"][0]["resume_commands"]), 1)
+        first_resume = aggregate["runs"][0]["resume_commands"][0]
+        self.assertIn("--dry-run", first_resume)
+        self.assertIn("--wave 1", first_resume)
+        self.assertIn("--task TASK-002", first_resume)
+        self.assertIn("--worktree-dir /tmp/worktrees", first_resume)
+        self.assertEqual(len(aggregate["runs"][1]["resume_commands"]), 1)
+        resume = aggregate["runs"][1]["resume_commands"][0]
+        self.assertIn(str(Path.home() / ".codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py"), resume)
+        self.assertIn("/tmp/repo/docs/agentic-system/implementation/implementation-plan.json", resume)
+        self.assertIn(f"--run-dir {second}", resume)
+        self.assertIn("--wave 2", resume)
+        self.assertIn("--task TASK-004", resume)
+        self.assertIn("--worktree-dir /tmp/worktrees", resume)
+        self.assertIn("--resume --reuse-worktrees", resume)
         self.assertIn("# Implementation Wave Run Report", markdown)
         self.assertIn("repo-20260529T120000Z", markdown)
         self.assertIn("failed=TASK-002", markdown)
+        self.assertIn("Resume:", markdown)
+        self.assertIn("--task TASK-004", markdown)
 
 
 if __name__ == "__main__":

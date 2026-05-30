@@ -11,7 +11,7 @@ The current codebase-intelligence module is a v0.1 scaffold. These items are int
 - Implemented incremental implementation-wave checkpointing: run state and summaries are written at run start and after each task, including failed task errors when preparation stops early.
 - Implemented implementation-wave resume: saved run state is bound to repo, plan path/hash, selected waves, and dry-run mode; resume skips already prepared tasks and retries failed or missing tasks.
 - Implemented targeted implementation-wave preparation with repeatable `--task TASK-ID` filtering inside the selected wave.
-- Implemented in `report_implementation_wave_runs.py`: aggregate reporting across multiple historical implementation-wave runs, including dry-run counts, selected waves, task status totals, failed tasks, branches, worktrees, and prompt paths from `run-summary.json` or `run-state.json`.
+- Implemented in `report_implementation_wave_runs.py`: aggregate reporting across multiple historical implementation-wave runs, including dry-run counts, selected waves, task status totals, failed tasks, branches, worktrees, prompt paths, and failed-task resume commands from `run-summary.json` plus `run-state.json` metadata or from `run-state.json` alone.
 - Implemented dry-run-safe cleanup/listing in `orchestrate_implementation_waves.py` for old implementation run directories and task worktrees, with actual removal gated by `--confirm-cleanup`.
 - Remaining follow-up: add Codex task execution and PR automation after the dry-run/worktree executor has been dogfooded.
 

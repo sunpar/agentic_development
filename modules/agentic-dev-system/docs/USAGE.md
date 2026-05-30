@@ -65,7 +65,7 @@ The implementation-wave executor prepares task worktrees and writes run state un
 It checkpoints `run-state.json`, `run-summary.json`, and `run-summary.md` at run start and after each task, so partial preparation failures keep completed task state and the failing task error in the external run directory.
 Resume mode reloads the existing run state, verifies the repo, implementation plan path/hash, selected waves, and dry-run mode, skips already prepared tasks, and retries failed or missing tasks.
 Use repeatable `--task TASK-ID` with `--wave` to prepare only specific tasks from the selected wave while preserving plan validation and wave order.
-The implementation-wave reporter scans historical run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals selected waves, tasks, task statuses, dry-run counts, failed tasks, branches, worktrees, and prompt paths.
+The implementation-wave reporter scans historical run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals selected waves, tasks, task statuses, dry-run counts, failed tasks, branches, worktrees, and prompt paths. When state metadata is available, failed tasks include exact resume commands with the run directory, wave, task id, worktree root, dry-run mode, and `--resume --reuse-worktrees`.
 Cleanup mode lists matching artifacts with `--dry-run`; actual removal requires `--cleanup-artifacts --confirm-cleanup`. Run directories are only considered when they contain `run-state.json`, and worktree cleanup scans direct children of `--worktree-dir`.
 
 ## Detailed Examples

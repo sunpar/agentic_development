@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import shlex
 from pathlib import Path
+
+ORCHESTRATOR = Path.home() / ".codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py"
 
 
 def now_utc():
@@ -56,8 +59,10 @@ def summary_from_state(run_dir):
         "generated_at": state.get("updated_at") or state.get("created_at"),
         "repo": state.get("repo"),
         "run_dir": state.get("run_dir") or str(run_dir),
+        "implementation_plan": state.get("implementation_plan"),
         "dry_run": bool(state.get("dry_run")),
         "selected_waves": list(state.get("selected_waves") or []),
+        "selected_task_ids": list(state.get("selected_task_ids") or []),
         "totals": {
             "tasks": len(tasks),
             "by_status": status_counts(tasks),
@@ -70,12 +75,101 @@ def unique_sorted(values):
     return sorted({str(value) for value in values if value})
 
 
+def task_by_id(tasks):
+    return {
+        str(item.get("id")): item
+        for item in tasks
+        if isinstance(item, dict) and item.get("id")
+    }
+
+
+def fill_missing(base, fallback, keys):
+    merged = dict(base)
+    for key in keys:
+        if merged.get(key) in (None, "", []):
+            value = fallback.get(key)
+            if value not in (None, "", []):
+                merged[key] = value
+    return merged
+
+
+def merge_task_details(summary_tasks, state_tasks):
+    state_by_id = task_by_id(state_tasks)
+    merged = []
+    seen = set()
+    detail_keys = ("wave", "branch", "worktree", "prompt_path", "error")
+    for item in summary_tasks:
+        task_id = str(item.get("id") or "")
+        seen.add(task_id)
+        merged.append(fill_missing(item, state_by_id.get(task_id, {}), detail_keys))
+    for task_id, item in state_by_id.items():
+        if task_id not in seen:
+            merged.append(item)
+    return merged
+
+
+def enrich_summary_from_state(summary, state_summary):
+    enriched = dict(summary)
+    for key in ("implementation_plan", "selected_task_ids", "selected_waves", "repo", "run_dir"):
+        if enriched.get(key) in (None, "", []):
+            value = state_summary.get(key)
+            if value not in (None, "", []):
+                enriched[key] = value
+    if enriched.get("dry_run") is None:
+        enriched["dry_run"] = state_summary.get("dry_run")
+    enriched["tasks"] = merge_task_details(
+        [item for item in enriched.get("tasks") or [] if isinstance(item, dict)],
+        [item for item in state_summary.get("tasks") or [] if isinstance(item, dict)],
+    )
+    return enriched
+
+
+def common_worktree_dir(tasks):
+    parents = unique_sorted(str(Path(item["worktree"]).parent) for item in tasks if item.get("worktree"))
+    return parents[0] if len(parents) == 1 else None
+
+
+def shell_join(parts):
+    return " ".join(shlex.quote(str(part)) for part in parts if part is not None and str(part) != "")
+
+
+def resume_commands(summary, failed_tasks, tasks):
+    plan_path = summary.get("implementation_plan")
+    run_dir = summary.get("run_dir")
+    if not plan_path or not run_dir or not failed_tasks:
+        return []
+    by_id = task_by_id(tasks)
+    worktree_dir = common_worktree_dir(tasks)
+    commands = []
+    for task_id in failed_tasks:
+        task = by_id.get(task_id, {})
+        cmd = [
+            "python3",
+            ORCHESTRATOR,
+            plan_path,
+            "--run-dir",
+            run_dir,
+        ]
+        if task.get("wave") is not None:
+            cmd += ["--wave", task.get("wave")]
+        cmd += ["--task", task_id]
+        if worktree_dir:
+            cmd += ["--worktree-dir", worktree_dir]
+        if summary.get("dry_run"):
+            cmd.append("--dry-run")
+        cmd += ["--resume", "--reuse-worktrees"]
+        commands.append(shell_join(cmd))
+    return commands
+
+
 def load_run_summary(run_dir):
     summary_path = run_dir / "run-summary.json"
     state_path = run_dir / "run-state.json"
     if summary_path.exists():
         summary = load_json(summary_path)
         source = summary_path
+        if state_path.exists():
+            summary = enrich_summary_from_state(summary, summary_from_state(run_dir))
     elif state_path.exists():
         summary = summary_from_state(run_dir)
         source = state_path
@@ -96,8 +190,10 @@ def load_run_summary(run_dir):
         "repo": summary.get("repo"),
         "generated_at": summary.get("generated_at"),
         "summary_source": str(source),
+        "implementation_plan": summary.get("implementation_plan"),
         "dry_run": bool(summary.get("dry_run")),
         "selected_waves": selected_waves,
+        "selected_task_ids": list(summary.get("selected_task_ids") or []),
         "totals": {
             "waves": len(selected_waves),
             "tasks": int(totals.get("tasks") or len(tasks)),
@@ -107,6 +203,7 @@ def load_run_summary(run_dir):
         "branches": unique_sorted(item.get("branch") for item in tasks),
         "worktrees": unique_sorted(item.get("worktree") for item in tasks),
         "prompt_paths": unique_sorted(item.get("prompt_path") for item in tasks),
+        "resume_commands": resume_commands(summary, failed_tasks, tasks),
     }
 
 
@@ -169,6 +266,8 @@ def write_markdown(path, aggregate):
         if run["branches"]:
             line += "; branches=" + ", ".join(run["branches"])
         lines.append(line)
+        for command in run.get("resume_commands") or []:
+            lines.append(f"  - Resume: `{command}`")
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
