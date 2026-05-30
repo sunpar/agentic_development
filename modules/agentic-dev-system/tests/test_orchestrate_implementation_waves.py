@@ -1,7 +1,9 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -242,6 +244,69 @@ class ImplementationWaveExecutorTests(unittest.TestCase):
             self.assertEqual(reused.returncode, 0, reused.stderr + reused.stdout)
             state = json.loads((Path(td) / "reused-run" / "run-state.json").read_text())
             self.assertTrue(state["tasks"]["TASK-001"]["reused_worktree"])
+
+    def test_cleanup_artifacts_dry_run_lists_old_runs_and_worktrees_without_removing(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_root = Path(td) / "runs"
+            worktrees = Path(td) / "worktrees"
+            old_run = runs_root / "repo-20200101T000000Z"
+            new_run = runs_root / "repo-new"
+            old_worktree = worktrees / "feature-old"
+            new_worktree = worktrees / "feature-new"
+            for path in [old_run, new_run, old_worktree, new_worktree]:
+                path.mkdir(parents=True)
+            (old_run / "run-state.json").write_text("{}\n", encoding="utf-8")
+            (new_run / "run-state.json").write_text("{}\n", encoding="utf-8")
+            old_time = time.time() - (60 * 60 * 24 * 40)
+            os.utime(old_run, (old_time, old_time))
+            os.utime(old_worktree, (old_time, old_time))
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                "--cleanup-artifacts",
+                "--dry-run",
+                "--runs-root",
+                str(runs_root),
+                "--worktree-dir",
+                str(worktrees),
+                "--cleanup-older-than-days",
+                "30",
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn(f"[dry-run] remove run_dir {old_run}", result.stdout)
+            self.assertIn(f"[dry-run] remove worktree {old_worktree}", result.stdout)
+            self.assertNotIn(str(new_run), result.stdout)
+            self.assertNotIn(str(new_worktree), result.stdout)
+            self.assertTrue(old_run.exists())
+            self.assertTrue(old_worktree.exists())
+
+    def test_cleanup_artifacts_removes_worktrees_through_git(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            worktrees = Path(td) / "worktrees"
+            old_worktree = worktrees / "feature-old"
+            git(repo, "worktree", "add", "-b", "feature/old", str(old_worktree), "HEAD")
+            old_time = time.time() - (60 * 60 * 24 * 40)
+            os.utime(old_worktree, (old_time, old_time))
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                "--cleanup-artifacts",
+                "--confirm-cleanup",
+                "--runs-root",
+                str(Path(td) / "runs"),
+                "--worktree-dir",
+                str(worktrees),
+                "--cleanup-older-than-days",
+                "30",
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertFalse(old_worktree.exists())
+            self.assertNotIn(str(old_worktree), git(repo, "worktree", "list", "--porcelain").stdout)
 
 
 if __name__ == "__main__":

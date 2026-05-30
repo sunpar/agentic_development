@@ -7,8 +7,10 @@ import datetime as dt
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -58,6 +60,89 @@ def sanitize_worktree_name(branch):
 
 def load_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def cleanup_cutoff(older_than_days):
+    return time.time() - (older_than_days * 24 * 60 * 60)
+
+
+def cleanup_candidates(root: Path, older_than_days: int, require_run_state=False):
+    root = root.expanduser()
+    if not root.exists():
+        return []
+    cutoff = cleanup_cutoff(older_than_days)
+    candidates = []
+    for child in sorted(root.iterdir(), key=lambda path: str(path)):
+        if not child.exists() or not child.is_dir():
+            continue
+        if require_run_state and not (child / "run-state.json").exists():
+            continue
+        try:
+            mtime = child.stat().st_mtime
+        except OSError:
+            continue
+        if mtime <= cutoff:
+            candidates.append(child)
+    return candidates
+
+
+def remove_artifact(path: Path):
+    if path.is_symlink():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def remove_worktree_artifact(path: Path):
+    top_result = run_cmd(["git", "-C", str(path), "rev-parse", "--show-toplevel"])
+    if top_result.returncode or Path(top_result.stdout.strip()).resolve() != path.resolve():
+        remove_artifact(path)
+        return {"removed_by": "filesystem"}
+    result = run_cmd(["git", "-C", str(path), "worktree", "remove", "--force", str(path)])
+    if result.returncode:
+        raise RuntimeError(result.stderr or result.stdout or f"git worktree remove failed for {path}")
+    return {
+        "removed_by": "git worktree remove",
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+
+
+def remove_cleanup_artifact(kind, path: Path):
+    if kind == "worktree":
+        return remove_worktree_artifact(path)
+    remove_artifact(path)
+    return {"removed_by": "filesystem"}
+
+
+def cleanup_artifacts(args):
+    if args.cleanup_older_than_days < 0:
+        print("--cleanup-older-than-days must be zero or greater", file=sys.stderr)
+        return 2
+    runs_root = Path(args.runs_root).expanduser()
+    worktree_dir = Path(args.worktree_dir).expanduser()
+    candidates = [
+        ("run_dir", path)
+        for path in cleanup_candidates(runs_root, args.cleanup_older_than_days, require_run_state=True)
+    ] + [
+        ("worktree", path)
+        for path in cleanup_candidates(worktree_dir, args.cleanup_older_than_days, require_run_state=False)
+    ]
+    if not candidates:
+        print("no cleanup artifacts matched")
+        return 0
+    if not args.dry_run and not args.confirm_cleanup:
+        print("refusing to remove artifacts without --confirm-cleanup or --dry-run", file=sys.stderr)
+        return 2
+    for kind, path in candidates:
+        if args.dry_run:
+            print(f"[dry-run] remove {kind} {path}")
+        else:
+            remove_cleanup_artifact(kind, path)
+            print(f"removed {kind} {path}")
+    return 0
 
 
 def write_json(path, data):
@@ -238,19 +323,28 @@ def validate_or_raise(plan):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Prepare implementation task waves.")
-    parser.add_argument("implementation_plan")
+    parser.add_argument("implementation_plan", nargs="?")
     parser.add_argument("--wave", type=int)
     parser.add_argument("--run-dir")
+    parser.add_argument("--runs-root", default=str(Path.home() / ".codex" / "runs" / "implementation-waves"))
     parser.add_argument("--worktree-dir", default=str(Path.home() / ".codex" / "worktrees" / "implementation"))
     parser.add_argument("--base-ref", default="HEAD")
     parser.add_argument("--max-parallel", type=int, default=1)
     parser.add_argument("--reuse-worktrees", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--cleanup-artifacts", action="store_true", help="List or remove old run directories and task worktrees.")
+    parser.add_argument("--cleanup-older-than-days", type=int, default=30)
+    parser.add_argument("--confirm-cleanup", action="store_true", help="Required to remove artifacts when --cleanup-artifacts is used without --dry-run.")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    if args.cleanup_artifacts:
+        return cleanup_artifacts(args)
+    if not args.implementation_plan:
+        print("implementation_plan is required unless --cleanup-artifacts is used", file=sys.stderr)
+        return 2
     if args.max_parallel <= 0:
         print("--max-parallel must be greater than zero", file=sys.stderr)
         return 2

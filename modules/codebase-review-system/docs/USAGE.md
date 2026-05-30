@@ -66,6 +66,19 @@ python3 ~/.codex/agentic-dev-system/scripts/report_implementation_wave_runs.py \
 
 The implementation-wave report scans direct child run directories, reads `run-summary.json` when available, falls back to `run-state.json`, and totals selected waves, tasks, task statuses, dry-run counts, failed tasks, branches, worktrees, and prompt paths across runs.
 
+List old implementation-wave run directories and task worktrees without removing anything:
+
+```bash
+python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py \
+  --cleanup-artifacts \
+  --dry-run \
+  --runs-root ~/.codex/runs/implementation-waves \
+  --worktree-dir ~/.codex/worktrees/implementation \
+  --cleanup-older-than-days 30
+```
+
+Actual removal requires both `--cleanup-artifacts` and `--confirm-cleanup`. Run directories are only considered when they contain `run-state.json`; worktree cleanup scans direct child directories of `--worktree-dir`.
+
 ## Merge Policy
 
 Merging is opt-in. Use `--allow-merge` only when the user explicitly asks for merge execution. Use `--no-merge` or `--pr-only` when the desired outcome is PR-only.
