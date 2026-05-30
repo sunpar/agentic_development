@@ -504,6 +504,7 @@ def prepare_worktree(repo, worktree_dir, branch, base_ref, reuse, dry_run):
 
 def write_summary(run_dir, state):
     tasks = state.get("tasks", {})
+    waves = state.get("waves", {})
     summary = {
         "generated_at": now_utc(),
         "repo": state.get("repo"),
@@ -518,6 +519,20 @@ def write_summary(run_dir, state):
             "tasks": len(tasks),
             "by_status": status_counts(tasks),
         },
+        "waves": [
+            {
+                "wave": item.get("wave", wave_id),
+                "status": item.get("status"),
+                "task_ids": item.get("task_ids", []),
+                "started_at": item.get("started_at"),
+                "completed_at": item.get("completed_at"),
+                "error": item.get("error"),
+            }
+            for wave_id, item in sorted(
+                waves.items(),
+                key=lambda pair: (0, int(pair[0])) if str(pair[0]).isdigit() else (1, str(pair[0])),
+            )
+        ],
         "tasks": [
             {
                 "id": task_id,
@@ -552,6 +567,16 @@ def write_summary(run_dir, state):
         f"Selected waves: {summary['selected_waves']}",
         f"Selected tasks: {summary['selected_task_ids']}",
         "",
+        "## Waves",
+        "",
+    ]
+    for item in summary["waves"]:
+        line = f"- Wave {item['wave']}: {item['status']} tasks={item['task_ids']}"
+        if item.get("error"):
+            line += f"; error={item['error']}"
+        lines.append(line)
+    lines += [
+        "",
         "## Tasks",
         "",
     ]
@@ -585,6 +610,7 @@ def validate_resume_state(state, repo, plan_path, plan_hash, selected_wave_numbe
     state.setdefault("execution_options", execution_opts)
     state.setdefault("selected_task_ids", selected_task_ids)
     state.setdefault("tasks", {})
+    state.setdefault("waves", {})
     return state
 
 
@@ -617,6 +643,7 @@ def initial_state(repo, run_dir, plan_path, plan_hash, selected_wave_numbers, se
         "selected_task_ids": selected_task_ids,
         "dry_run": dry_run,
         "execution_options": execution_opts,
+        "waves": {},
         "tasks": {},
     }
 
@@ -658,6 +685,17 @@ def checkpoint_task_state(run_dir, state, state_lock, task_id, updates, replace=
 def current_task_state(state, state_lock, task_id):
     with state_lock:
         return dict(state.get("tasks", {}).get(task_id, {}))
+
+
+def checkpoint_wave_state(run_dir, state, state_lock, wave_number, updates, replace=False):
+    wave_id = str(wave_number)
+    with state_lock:
+        if replace:
+            state.setdefault("waves", {})[wave_id] = updates
+        else:
+            state.setdefault("waves", {}).setdefault(wave_id, {}).update(updates)
+        checkpoint_state(run_dir, state)
+        return dict(state["waves"][wave_id])
 
 
 def run_task(task, args, repo, worktree_dir, base_ref, run_dir, plan_path, state, state_lock, pr_base_branch):
@@ -986,6 +1024,19 @@ def main():
             if not wave_task_ids:
                 continue
             print(f"wave {wave_number}: {wave_task_ids}")
+            checkpoint_wave_state(
+                run_dir,
+                state,
+                state_lock,
+                wave_number,
+                {
+                    "status": "running",
+                    "wave": wave_number,
+                    "task_ids": wave_task_ids,
+                    "started_at": now_utc(),
+                },
+                replace=True,
+            )
             pending = []
             for task_id in wave_task_ids:
                 previous = state.get("tasks", {}).get(task_id) or {}
@@ -1033,14 +1084,51 @@ def main():
 
             failed = [item for item in results if item.get("status") == "failed"]
             if failed:
+                error = "; ".join(f"{item.get('id', item.get('branch', 'task'))}: {item.get('error', 'unknown error')}" for item in failed)
+                checkpoint_wave_state(
+                    run_dir,
+                    state,
+                    state_lock,
+                    wave_number,
+                    {
+                        "status": "failed",
+                        "completed_at": now_utc(),
+                        "error": error,
+                    },
+                )
                 for item in failed:
                     print(f"{item.get('id', item.get('branch', 'task'))} failed: {item.get('error', 'unknown error')}", file=sys.stderr)
                 raise RuntimeError(f"wave {wave_number} failed; later waves blocked")
 
-            if merge_enabled and not args.dry_run:
-                for task_id in wave.get("integration_order", wave_task_ids):
-                    if task_id in selected_task_set:
-                        merge_ready_task(tasks_by_id[task_id], args, run_dir, state, state_lock)
+            try:
+                if merge_enabled and not args.dry_run:
+                    for task_id in wave.get("integration_order", wave_task_ids):
+                        if task_id in selected_task_set:
+                            merge_ready_task(tasks_by_id[task_id], args, run_dir, state, state_lock)
+            except Exception as exc:
+                checkpoint_wave_state(
+                    run_dir,
+                    state,
+                    state_lock,
+                    wave_number,
+                    {
+                        "status": "failed",
+                        "completed_at": now_utc(),
+                        "error": str(exc),
+                    },
+                )
+                raise
+
+            checkpoint_wave_state(
+                run_dir,
+                state,
+                state_lock,
+                wave_number,
+                {
+                    "status": "succeeded",
+                    "completed_at": now_utc(),
+                },
+            )
 
         print(f"run_dir={run_dir}")
         return 0
