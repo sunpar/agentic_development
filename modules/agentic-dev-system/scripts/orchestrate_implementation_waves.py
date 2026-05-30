@@ -7,6 +7,7 @@ import datetime as dt
 import hashlib
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,8 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from validate_plan import validate_plan  # noqa: E402
 
+MODEL_ARGS = ["--model", "gpt-5.3-codex-spark", "-c", 'model_reasoning_effort="xhigh"']
+
 
 def now_utc():
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -28,6 +31,17 @@ def run_cmd(cmd, cwd=None):
     return subprocess.run(
         cmd,
         cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def run_shell(command, cwd=None):
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        shell=True,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -60,6 +74,19 @@ def sanitize_worktree_name(branch):
 
 def load_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def safe_extra_args(value):
+    args = shlex.split(value) if value else []
+    banned = {"--model", "-m", "--sandbox", "-s", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"}
+    for index, arg in enumerate(args):
+        if arg in banned or arg.startswith("--model=") or arg.startswith("--sandbox="):
+            raise RuntimeError(f"unsafe --codex-extra-args token blocked: {arg}")
+        if arg in {"-c", "--config"}:
+            nxt = args[index + 1] if index + 1 < len(args) else ""
+            if any(key in nxt for key in ["model", "model_reasoning_effort", "sandbox", "danger"]):
+                raise RuntimeError(f"unsafe --codex-extra-args config blocked: {nxt}")
+    return args
 
 
 def cleanup_cutoff(older_than_days):
@@ -222,6 +249,59 @@ def build_prompt(task, plan_path, task_markdown_path):
     return "\n".join(lines) + "\n"
 
 
+def codex_command(args, prompt):
+    cmd = [args.codex_bin, "exec"] + MODEL_ARGS
+    if args.codex_profile:
+        cmd += ["--profile", args.codex_profile]
+    cmd += safe_extra_args(args.codex_extra_args)
+    cmd.append(prompt)
+    return cmd
+
+
+def run_codex_task(args, worktree, prompt_path, task_dir):
+    prompt = Path(prompt_path).read_text(encoding="utf-8")
+    cmd = codex_command(args, prompt)
+    result = run_cmd(cmd, cwd=worktree)
+    stdout_log = task_dir / "codex.stdout.log"
+    stderr_log = task_dir / "codex.stderr.log"
+    stdout_log.write_text(result.stdout, encoding="utf-8")
+    stderr_log.write_text(result.stderr, encoding="utf-8")
+    return {
+        "returncode": result.returncode,
+        "stdout_log": str(stdout_log),
+        "stderr_log": str(stderr_log),
+    }
+
+
+def verification_results(commands, cwd):
+    results = []
+    for command in commands:
+        result = run_shell(command, cwd)
+        results.append({
+            "command": command,
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        })
+    return results
+
+
+def failed_verification(results):
+    return next((item for item in results if item["returncode"] != 0), None)
+
+
+def changed_files(worktree):
+    result = run_cmd(["git", "status", "--short", "--untracked-files=all"], cwd=worktree)
+    if result.returncode:
+        raise RuntimeError(result.stderr or result.stdout or "git status failed")
+    files = []
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        files.append(line[3:].strip())
+    return files
+
+
 def write_task_artifacts(run_dir, plan_path, task):
     task_dir = run_dir / "tasks" / task["id"]
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -293,6 +373,9 @@ def write_summary(run_dir, state):
                 "branch": item.get("branch"),
                 "worktree": item.get("worktree"),
                 "prompt_path": item.get("prompt_path"),
+                "codex": item.get("codex"),
+                "verification": item.get("verification"),
+                "changed_files": item.get("changed_files"),
                 "error": item.get("error"),
             }
             for task_id, item in sorted(tasks.items())
@@ -397,6 +480,10 @@ def parse_args():
     parser.add_argument("--reuse-worktrees", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--allow-codex", action="store_true", help="Run Codex for each prepared task worktree. Dry-run still only prints planned work.")
+    parser.add_argument("--codex-bin", default="codex")
+    parser.add_argument("--codex-profile")
+    parser.add_argument("--codex-extra-args", default="")
     parser.add_argument("--cleanup-artifacts", action="store_true", help="List or remove old run directories and task worktrees.")
     parser.add_argument("--cleanup-older-than-days", type=int, default=30)
     parser.add_argument("--confirm-cleanup", action="store_true", help="Required to remove artifacts when --cleanup-artifacts is used without --dry-run.")
@@ -446,7 +533,11 @@ def main():
             branch = task.get("branch") or f"agentic-task-{task['id'].lower()}"
             task_id = task["id"]
             previous = state.get("tasks", {}).get(task_id) or {}
-            if args.resume and previous.get("status") in {"planned", "worktree_ready"}:
+            if args.allow_codex and not args.dry_run:
+                complete_statuses = {"implemented"}
+            else:
+                complete_statuses = {"planned"} if args.dry_run else {"worktree_ready"}
+            if args.resume and previous.get("status") in complete_statuses:
                 print(f"RESUME: skipping {task_id} status {previous.get('status')}")
                 continue
             prompt_path = None
@@ -481,6 +572,25 @@ def main():
                     "completed_at": now_utc(),
                 })
                 checkpoint_state(run_dir, state)
+                if args.allow_codex and not args.dry_run:
+                    task_dir = run_dir / "tasks" / task_id
+                    codex = run_codex_task(args, worktree_path, prompt_path, task_dir)
+                    state["tasks"][task_id]["codex"] = codex
+                    checkpoint_state(run_dir, state)
+                    if codex["returncode"]:
+                        raise RuntimeError(f"codex exited {codex['returncode']}")
+                    verify = verification_results(task.get("verification_commands", []), worktree_path)
+                    state["tasks"][task_id]["verification"] = verify
+                    checkpoint_state(run_dir, state)
+                    failed = failed_verification(verify)
+                    if failed:
+                        raise RuntimeError(f"verification failed: {failed['command']}")
+                    state["tasks"][task_id].update({
+                        "status": "implemented",
+                        "changed_files": changed_files(worktree_path),
+                        "completed_at": now_utc(),
+                    })
+                    checkpoint_state(run_dir, state)
             except Exception as exc:
                 state["tasks"][task_id].update({
                     "status": "failed",
@@ -493,6 +603,8 @@ def main():
             prefix = "DRY-RUN: would prepare" if args.dry_run else "prepared"
             print(f"{prefix} {task_id} branch {branch} worktree {worktree_path}")
             print(f"NEXT: task prompt {prompt_path}")
+            if args.allow_codex and args.dry_run:
+                print(f"DRY-RUN: would run codex for {task_id}")
 
         print(f"run_dir={run_dir}")
         return 0
