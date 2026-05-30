@@ -127,6 +127,11 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
         self.assertEqual(aggregate['totals']['by_status']['failed'], 1)
         self.assertEqual(aggregate['totals']['by_status']['merged'], 1)
         self.assertEqual(aggregate['runs'][0]['failed_slices'], ['SLICE-002'])
+        self.assertEqual(aggregate['runs'][0]['branches'], ['codebase-review/s1', 'codebase-review/s2'])
+        self.assertEqual(aggregate['runs'][0]['worktrees'], [
+            '/tmp/worktrees/codebase-review-s1',
+            '/tmp/worktrees/codebase-review-s2',
+        ])
         self.assertEqual(aggregate['runs'][1]['pr_numbers'], [11])
         self.assertEqual(aggregate['runs'][1]['review_request_count'], 2)
         self.assertEqual(aggregate['runs'][1]['review_request_agents'], ['codex', 'copilot'])
@@ -150,6 +155,8 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
         self.assertIn('- Review requests: 2', markdown)
         self.assertIn('- Merged slices: 1', markdown)
         self.assertIn('failed: 1', markdown)
+        self.assertIn('branches=codebase-review/s1, codebase-review/s2', markdown)
+        self.assertIn('worktrees=/tmp/worktrees/codebase-review-s1, /tmp/worktrees/codebase-review-s2', markdown)
         self.assertIn('review_requests=2', markdown)
         self.assertIn('merged=1', markdown)
         self.assertIn('Resume:', markdown)
