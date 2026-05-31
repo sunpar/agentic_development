@@ -423,6 +423,8 @@ pathlib.Path({str(marker)!r}).write_text('ran', encoding='utf-8')
                 "no_merge": False,
                 "merge_method": "rebase",
                 "max_parallel": 2,
+                "review_repair_attempts": 2,
+                "resolve_review_threads": True,
                 "delete_branch": True,
             })
 
@@ -717,6 +719,104 @@ if sys.argv[1:3] == ['pr', 'create']:
             summary = json.loads((run_dir / "run-summary.json").read_text())
             self.assertEqual(summary["totals"]["by_status"]["merged"], 1)
             self.assertEqual(summary["tasks"][0]["merge"]["returncode"], 0)
+
+    def test_allow_merge_repairs_unresolved_review_threads_and_retries_gate(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            add_bare_origin(td, repo)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            bin_dir = Path(td) / "bin"
+            marker = Path(td) / "repair-done"
+            gh_log = Path(td) / "gh-calls.log"
+            merge_log = Path(td) / "merge-gate.log"
+            bin_dir.mkdir()
+            codex = fake_codex_bin(bin_dir, f"""
+import pathlib
+import sys
+
+prompt = sys.argv[-1]
+pathlib.Path('src').mkdir(exist_ok=True)
+if 'Active review threads JSON' in prompt:
+    pathlib.Path('src/task-001.py').write_text('repaired\\n', encoding='utf-8')
+    pathlib.Path({str(marker)!r}).write_text('done', encoding='utf-8')
+else:
+    pathlib.Path('src/task-001.py').write_text('implemented\\n', encoding='utf-8')
+""")
+            gh = fake_gh_bin(bin_dir, f"""
+import json
+import pathlib
+import sys
+
+args = sys.argv[1:]
+with pathlib.Path({str(gh_log)!r}).open('a', encoding='utf-8') as handle:
+    handle.write(' '.join(args) + '\\n')
+if args[:2] == ['pr', 'create']:
+    print('https://github.com/example/repo/pull/123')
+elif args[:2] == ['pr', 'comment']:
+    print('https://github.com/example/repo/pull/123#issuecomment-1')
+elif args[:2] == ['api', 'graphql']:
+    joined = ' '.join(args)
+    if 'resolveReviewThread' in joined:
+        print(json.dumps({{'data': {{'resolveReviewThread': {{'thread': {{'id': 'THREAD1', 'isResolved': True}}}}}}}}))
+    else:
+        nodes = [] if pathlib.Path({str(marker)!r}).exists() else [{{
+            'id': 'THREAD1',
+            'isResolved': False,
+            'isOutdated': False,
+            'path': 'src/task-001.py',
+            'line': 1,
+            'comments': {{'nodes': [{{'body': 'Please fix this', 'author': {{'login': 'reviewer'}}}}]}},
+        }}]
+        print(json.dumps({{'data': {{'repository': {{'pullRequest': {{'reviewThreads': {{'nodes': nodes, 'pageInfo': {{'hasNextPage': False}}}}}}}}}}}}))
+""")
+            merge_gate = fake_merge_gate(Path(td) / "merge_gate.py", merge_log, f"""
+import pathlib
+import sys
+if not pathlib.Path({str(marker)!r}).exists():
+    print('unresolved review threads remain', file=sys.stderr)
+    raise SystemExit(2)
+print('merged')
+""")
+            item = task("TASK-001", 1, "feature/task-001-core-flow")
+            item["verification_commands"] = ["python3 -c \"from pathlib import Path; assert Path('src/task-001.py').exists()\""]
+            write_plan(plan, [item])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--allow-pr",
+                "--allow-review-request",
+                "--allow-merge",
+                "--review-repair-attempts",
+                "1",
+                "--merge-gate-script",
+                str(merge_gate),
+                "--codex-bin",
+                str(codex),
+                "--gh-bin",
+                str(gh),
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("review repair attempt 1/1", result.stdout)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            task_state = state["tasks"]["TASK-001"]
+            self.assertEqual(task_state["status"], "merged")
+            self.assertEqual(task_state["review_repair_attempts"][0]["status"], "pushed")
+            self.assertEqual(task_state["review_repair_attempts"][0]["resolved_threads"][0]["thread_id"], "THREAD1")
+            self.assertTrue((run_dir / "tasks" / "TASK-001" / "review-repair-1.stdout.log").exists())
+            self.assertIn("pr comment 123", gh_log.read_text())
+            self.assertGreaterEqual(merge_log.read_text().count("--pr 123"), 2)
 
     def test_allow_merge_requires_allow_pr(self):
         with tempfile.TemporaryDirectory() as td:
