@@ -72,6 +72,89 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
         self.assertEqual(aggregate['runs'][0]['review_request_count'], 1)
         self.assertEqual(aggregate['runs'][0]['review_request_agents'], ['codex'])
 
+    def test_state_enrichment_is_best_effort_and_recomputes_totals(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'runs'
+            unreadable = root / 'repo-20260529T150000Z'
+            stale = root / 'repo-20260529T160000Z'
+            unreadable.mkdir(parents=True)
+            stale.mkdir()
+            (unreadable / 'run-summary.json').write_text(json.dumps({
+                'repo': '/tmp/repo',
+                'run_dir': str(unreadable),
+                'totals': {'waves': 1, 'slices': 1, 'by_status': {'succeeded': 1}},
+                'slices': [{'id': 'SLICE-001', 'status': 'succeeded'}],
+            }))
+            (unreadable / 'run-state.json').write_text('{not-json')
+            (stale / 'run-summary.json').write_text(json.dumps({
+                'repo': '/tmp/repo',
+                'run_dir': str(stale),
+                'totals': {'waves': 1, 'slices': 1, 'by_status': {'succeeded': 1}},
+                'waves': [{'wave': '1', 'status': 'running', 'slice_ids': ['SLICE-001']}],
+                'slices': [{'id': 'SLICE-001', 'status': 'succeeded'}],
+            }))
+            (stale / 'run-state.json').write_text(json.dumps({
+                'repo': '/tmp/repo',
+                'run_dir': str(stale),
+                'waves': {'1': {'status': 'failed', 'slice_ids': ['SLICE-001', 'SLICE-002']}},
+                'slices': {
+                    'SLICE-001': {'status': 'succeeded'},
+                    'SLICE-002': {'status': 'failed', 'worktree': '/tmp/worktrees/s2'},
+                },
+            }))
+            output_json = Path(td) / 'aggregate.json'
+
+            result = run([
+                PY,
+                str(SCRIPT),
+                '--runs-root',
+                str(root),
+                '--output-json',
+                str(output_json),
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            aggregate = json.loads(output_json.read_text())
+
+        self.assertEqual(aggregate['totals']['runs'], 2)
+        stale_run = aggregate['runs'][1]
+        self.assertEqual(stale_run['totals']['slices'], 2)
+        self.assertEqual(stale_run['totals']['by_status'], {'failed': 1, 'succeeded': 1})
+
+    def test_resume_command_runs_from_repo(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'runs'
+            run_dir = root / 'repo-20260529T170000Z'
+            run_dir.mkdir(parents=True)
+            (run_dir / 'run-state.json').write_text(json.dumps({
+                'repo': '/tmp/repo',
+                'run_dir': str(run_dir),
+                'slice_plan': '/tmp/repo/slice-plan.json',
+                'waves_path': '/tmp/repo/waves.json',
+                'execution_options': {'allow_pr': True, 'worktree_dir': '/tmp/custom-worktrees'},
+                'slices': {
+                    'SLICE-001': {'status': 'failed'},
+                },
+            }))
+            output_json = Path(td) / 'aggregate.json'
+
+            result = run([
+                PY,
+                str(SCRIPT),
+                '--runs-root',
+                str(root),
+                '--output-json',
+                str(output_json),
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            aggregate = json.loads(output_json.read_text())
+
+        resume = aggregate['runs'][0]['resume_commands'][0]
+        self.assertTrue(resume.startswith('cd /tmp/repo && '))
+        self.assertIn('--allow-pr', resume)
+        self.assertIn('--worktree-dir /tmp/custom-worktrees', resume)
+
     def test_aggregates_summary_and_state_backed_runs(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / 'runs'
@@ -172,7 +255,7 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
         self.assertEqual(aggregate['totals']['waves'], 2)
         self.assertEqual(aggregate['totals']['slices'], 3)
         self.assertEqual(aggregate['totals']['prs'], 2)
-        self.assertEqual(aggregate['totals']['review_requests'], 2)
+        self.assertEqual(aggregate['totals']['review_requests'], 1)
         self.assertEqual(aggregate['totals']['merged_slices'], 1)
         self.assertEqual(aggregate['totals']['by_status']['succeeded'], 1)
         self.assertEqual(aggregate['totals']['by_status']['failed'], 1)
@@ -184,8 +267,8 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
             '/tmp/worktrees/codebase-review-s2',
         ])
         self.assertEqual(aggregate['runs'][1]['pr_numbers'], [11])
-        self.assertEqual(aggregate['runs'][1]['review_request_count'], 2)
-        self.assertEqual(aggregate['runs'][1]['review_request_agents'], ['codex', 'copilot'])
+        self.assertEqual(aggregate['runs'][1]['review_request_count'], 1)
+        self.assertEqual(aggregate['runs'][1]['review_request_agents'], ['codex'])
         self.assertEqual(aggregate['runs'][1]['merged_slices'], 1)
         self.assertEqual(len(aggregate['runs'][0]['resume_commands']), 1)
         resume = aggregate['runs'][0]['resume_commands'][0]
@@ -203,12 +286,12 @@ class TestReportCodebaseReviewRuns(unittest.TestCase):
         self.assertIn('## Runs', markdown)
         self.assertIn('repo-20260529T120000Z', markdown)
         self.assertIn('- PRs: 2', markdown)
-        self.assertIn('- Review requests: 2', markdown)
+        self.assertIn('- Review requests: 1', markdown)
         self.assertIn('- Merged slices: 1', markdown)
         self.assertIn('failed: 1', markdown)
         self.assertIn('branches=codebase-review/s1, codebase-review/s2', markdown)
         self.assertIn('worktrees=/tmp/worktrees/codebase-review-s1, /tmp/worktrees/codebase-review-s2', markdown)
-        self.assertIn('review_requests=2', markdown)
+        self.assertIn('review_requests=1', markdown)
         self.assertIn('merged=1', markdown)
         self.assertIn('Resume:', markdown)
 

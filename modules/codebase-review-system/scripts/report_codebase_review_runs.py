@@ -147,6 +147,12 @@ def enrich_summary_from_state(summary, state_summary):
         [item for item in enriched.get('slices') or [] if isinstance(item, dict)],
         [item for item in state_summary.get('slices') or [] if isinstance(item, dict)],
     )
+    enriched['totals'] = {
+        **dict(enriched.get('totals') or {}),
+        'waves': len([item for item in enriched.get('waves') or [] if isinstance(item, dict)]),
+        'slices': len(enriched['slices']),
+        'by_status': status_counts(enriched['slices']),
+    }
     return enriched
 
 
@@ -189,7 +195,8 @@ def resume_commands(summary, failed_slices, slices):
     run_dir = summary.get('run_dir')
     if not slice_plan or not waves_path or not run_dir or not failed_slices:
         return []
-    worktree_dir = common_worktree_dir(slices)
+    options = summary.get('execution_options') or {}
+    worktree_dir = options.get('worktree_dir') or common_worktree_dir(slices)
     cmd = [
         'python3',
         ORCHESTRATOR,
@@ -202,7 +209,10 @@ def resume_commands(summary, failed_slices, slices):
         cmd += ['--worktree-dir', worktree_dir]
     cmd += execution_resume_args(summary)
     cmd += ['--resume', '--reuse-worktrees']
-    return [shell_join(cmd)]
+    command = shell_join(cmd)
+    if summary.get('repo'):
+        command = f"cd {shlex.quote(str(summary['repo']))} && {command}"
+    return [command]
 
 
 def pr_numbers(slices):
@@ -218,19 +228,24 @@ def review_request_agents_for_slice(item):
     if isinstance(requests, dict):
         agents = requests.get('agents')
         if isinstance(agents, dict):
-            return [str(agent) for agent in agents if agent]
+            return [
+                str(agent)
+                for agent, record in agents.items()
+                if agent and isinstance(record, dict) and record.get('status') == 'completed'
+            ]
         if isinstance(agents, list):
             return [
                 str(agent.get('agent') if isinstance(agent, dict) else agent)
                 for agent in agents
-                if agent
+                if agent and (not isinstance(agent, dict) or agent.get('returncode') in (0, None))
             ]
         return [''] if requests.get('requested_at') else []
     if isinstance(requests, list):
         agents = []
         for request in requests:
             if isinstance(request, dict):
-                agents.append(str(request.get('agent') or ''))
+                if request.get('returncode') in (0, None) and request.get('status', 'completed') == 'completed':
+                    agents.append(str(request.get('agent') or ''))
             elif request:
                 agents.append(str(request))
         return agents
@@ -264,7 +279,10 @@ def load_run_summary(run_dir):
         summary = load_json(summary_path)
         source = summary_path
         if state_path.exists():
-            summary = enrich_summary_from_state(summary, summary_from_state(run_dir))
+            try:
+                summary = enrich_summary_from_state(summary, summary_from_state(run_dir))
+            except (OSError, json.JSONDecodeError, ValueError):
+                pass
     elif state_path.exists():
         summary = summary_from_state(run_dir)
         source = state_path
@@ -281,6 +299,13 @@ def load_run_summary(run_dir):
         if str(item.get('status') or '') in {'failed', 'error'}
     ]
     totals = summary.get('totals') or {}
+    if not totals.get('slices') or not totals.get('by_status'):
+        totals = {
+            **dict(totals),
+            'waves': len([item for item in summary.get('waves') or [] if isinstance(item, dict)]),
+            'slices': len(slices),
+            'by_status': status_counts(slices),
+        }
     return {
         'name': run_dir.name,
         'run_dir': str(run_dir),

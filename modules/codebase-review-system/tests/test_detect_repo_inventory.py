@@ -33,6 +33,26 @@ class DetectRepoInventoryTests(unittest.TestCase):
         self.assertEqual(inventory['package_managers'], ['npm', 'python'])
         self.assertEqual(inventory['manifests'], ['package.json', 'pyproject.toml'])
 
+    def test_package_json_does_not_add_npm_when_stronger_js_lockfile_exists(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / 'repo'
+            repo.mkdir()
+            (repo / 'package.json').write_text('{"scripts":{"test":"vitest"}}\n', encoding='utf-8')
+            (repo / 'pnpm-lock.yaml').write_text('lockfileVersion: 9\n', encoding='utf-8')
+
+            result = subprocess.run(
+                [PY, str(SCRIPT), '--dry-run'],
+                cwd=repo,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            inventory = json.loads(result.stdout)
+
+        self.assertEqual(inventory['package_managers'], ['pnpm'])
+
 
 if __name__ == '__main__':
     unittest.main()

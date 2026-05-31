@@ -88,6 +88,95 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
             str(run_dir / "tasks/TASK-001/merge.stdout.log"),
         ])
 
+    def test_state_enrichment_recomputes_totals_and_prefers_state_waves(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "runs"
+            run_dir = root / "repo-20260529T150000Z"
+            run_dir.mkdir(parents=True)
+            (run_dir / "run-summary.json").write_text(json.dumps({
+                "repo": "/tmp/repo",
+                "run_dir": str(run_dir),
+                "selected_waves": [1],
+                "totals": {
+                    "tasks": 1,
+                    "by_status": {"planned": 1},
+                },
+                "waves": [
+                    {"wave": 1, "status": "running", "task_ids": ["TASK-001"]},
+                ],
+                "tasks": [
+                    {"id": "TASK-001", "status": "planned"},
+                ],
+            }), encoding="utf-8")
+            (run_dir / "run-state.json").write_text(json.dumps({
+                "repo": "/tmp/repo",
+                "run_dir": str(run_dir),
+                "selected_waves": [1],
+                "selected_task_ids": ["TASK-001", "TASK-002"],
+                "waves": {
+                    "1": {"wave": 1, "status": "failed", "task_ids": ["TASK-001", "TASK-002"], "error": "boom"},
+                },
+                "tasks": {
+                    "TASK-001": {"status": "planned"},
+                    "TASK-002": {"status": "failed", "wave": 1, "worktree": "/tmp/worktrees/task-002"},
+                },
+            }), encoding="utf-8")
+            output_json = Path(td) / "aggregate.json"
+
+            result = run([
+                PY,
+                str(SCRIPT),
+                "--runs-root",
+                str(root),
+                "--output-json",
+                str(output_json),
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            aggregate = json.loads(output_json.read_text())
+
+        run_summary = aggregate["runs"][0]
+        self.assertEqual(run_summary["totals"]["tasks"], 2)
+        self.assertEqual(run_summary["totals"]["by_status"], {"failed": 1, "planned": 1})
+        self.assertEqual(run_summary["waves"][0]["status"], "failed")
+        self.assertEqual(run_summary["failed_waves"], [1])
+
+    def test_resume_command_runs_from_repo_and_preserves_selected_tasks(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "runs"
+            run_dir = root / "repo-20260529T160000Z"
+            run_dir.mkdir(parents=True)
+            (run_dir / "run-state.json").write_text(json.dumps({
+                "repo": "/tmp/repo",
+                "run_dir": str(run_dir),
+                "implementation_plan": "/tmp/repo/docs/implementation-plan.json",
+                "dry_run": False,
+                "selected_waves": [1],
+                "selected_task_ids": ["TASK-001", "TASK-002"],
+                "execution_options": {"allow_codex": True, "allow_pr": True},
+                "tasks": {
+                    "TASK-001": {"status": "implemented", "wave": 1, "worktree": "/tmp/worktrees/task-001"},
+                    "TASK-002": {"status": "failed", "wave": 1, "worktree": "/tmp/worktrees/task-002"},
+                },
+            }), encoding="utf-8")
+            output_json = Path(td) / "aggregate.json"
+
+            result = run([
+                PY,
+                str(SCRIPT),
+                "--runs-root",
+                str(root),
+                "--output-json",
+                str(output_json),
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            aggregate = json.loads(output_json.read_text())
+
+        resume = aggregate["runs"][0]["resume_commands"][0]
+        self.assertTrue(resume.startswith("cd /tmp/repo && "))
+        self.assertIn("--task TASK-001 --task TASK-002", resume)
+
     def test_aggregates_summary_and_state_backed_runs(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "runs"
@@ -176,11 +265,21 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
                 },
                 "execution_options": {
                     "allow_codex": True,
+                    "codex_bin": "/opt/bin/codex-wrapper",
+                    "codex_profile": "prod",
+                    "codex_extra_args": "--config foo=bar",
                     "allow_pr": True,
+                    "gh_bin": "/opt/bin/gh-wrapper",
+                    "pr_base": "release",
                     "allow_review_request": True,
                     "review_agents": "codex,copilot",
                     "allow_merge": True,
+                    "merge_gate_script": "/tmp/custom-merge-gate.py",
                     "merge_method": "squash",
+                    "ci_timeout_seconds": 42,
+                    "ci_poll_seconds": 3,
+                    "review_timeout_seconds": 43,
+                    "review_thread_timeout_seconds": 4,
                     "max_parallel": 3,
                     "review_repair_attempts": 2,
                     "resolve_review_threads": False,
@@ -276,9 +375,16 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertIn("--wave 2", resume)
         self.assertIn("--task TASK-004", resume)
         self.assertIn("--worktree-dir /tmp/worktrees", resume)
-        self.assertIn("--allow-codex --allow-pr", resume)
+        self.assertIn("--allow-codex --codex-bin /opt/bin/codex-wrapper --codex-profile prod", resume)
+        self.assertIn("--codex-extra-args '--config foo=bar'", resume)
+        self.assertIn("--allow-pr --gh-bin /opt/bin/gh-wrapper --pr-base release", resume)
         self.assertIn("--allow-review-request --review-agents codex,copilot", resume)
-        self.assertIn("--allow-merge --merge-method squash --delete-branch", resume)
+        self.assertIn("--merge-gate-script /tmp/custom-merge-gate.py", resume)
+        self.assertIn("--ci-timeout-seconds 42 --ci-poll-seconds 3", resume)
+        self.assertIn("--review-timeout-seconds 43 --review-thread-timeout-seconds 4", resume)
+        self.assertIn("--allow-merge", resume)
+        self.assertIn("--merge-method squash", resume)
+        self.assertIn("--delete-branch", resume)
         self.assertIn("--max-parallel 3", resume)
         self.assertIn("--review-repair-attempts 2 --no-resolve-review-threads", resume)
         self.assertIn("--resume --reuse-worktrees", resume)

@@ -125,6 +125,14 @@ def is_valid_branch_name(branch: str) -> bool:
     return bool(re.match(r"^(?!/)(?!.*\.\.)(?!.*//)(?!.*@\{)(?!.*[ ~^:?*\\[]).+(?<![/.])$", branch))
 
 
+def sanitized_worktree_name(branch: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_.-]", "-", branch).strip("-") or "task-worktree"
+
+
+def branch_namespace_conflict(left: str, right: str) -> bool:
+    return left.startswith(right + "/") or right.startswith(left + "/")
+
+
 def has_risky_write_set(task: dict) -> bool:
     joined = " ".join(str(item) for item in task.get("write_set", [])).lower()
     return any(token in joined for token in RISKY_TOKENS)
@@ -155,6 +163,7 @@ def validate_plan(plan):
     task_wave = {}
     task_ids = set()
     branch_owner = {}
+    sanitized_branch_owner = {}
     for idx, task in enumerate(tasks):
         if not isinstance(task, dict):
             errors.append(f"task index {idx} is not an object")
@@ -182,6 +191,12 @@ def validate_plan(plan):
                 errors.append(f"duplicate task branch {branch}: {previous} and {tid or idx}")
             else:
                 branch_owner[branch] = tid or idx
+            sanitized = sanitized_worktree_name(branch)
+            previous_sanitized = sanitized_branch_owner.get(sanitized)
+            if previous_sanitized:
+                errors.append(f"task branch worktree path collision {sanitized}: {previous_sanitized} and {tid or idx}")
+            else:
+                sanitized_branch_owner[sanitized] = tid or idx
         if task.get("merge_safe") and not str(task.get("merge_safe_reason", "")).strip():
             errors.append(f"task {tid or idx} has merge_safe=true without merge_safe_reason")
         write_set = as_list(task.get("write_set", []), f"task {tid or idx} write_set", errors)
@@ -245,6 +260,20 @@ def validate_plan(plan):
                 errors.append(f"wave {wave_num} references unknown task {tid}")
             elif task_wave.get(tid, None) != wave_num:
                 errors.append(f"task {tid} listed in wrong wave bucket")
+        integration_order = wave.get("integration_order")
+        if integration_order is not None:
+            order = as_list(integration_order, f"wave {wave_num} integration_order", errors)
+            task_ids_for_wave = wave.get("task_ids", []) if isinstance(wave.get("task_ids"), list) else []
+            if set(order) != set(task_ids_for_wave):
+                errors.append(f"wave {wave_num} integration_order must match task_ids")
+
+    branches = sorted(branch_owner)
+    for index, left in enumerate(branches):
+        for right in branches[index + 1:]:
+            if branch_namespace_conflict(left, right):
+                errors.append(
+                    f"task branch namespace conflict: {branch_owner[left]} uses {left} and {branch_owner[right]} uses {right}"
+                )
 
     wave_membership = {tid: 0 for tid in task_ids}
     for wave in waves:

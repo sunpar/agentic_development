@@ -51,9 +51,12 @@ def unique_in_order(values):
 
 
 def package_managers(manifests):
+    names = {Path(manifest).name for manifest in manifests}
+    has_stronger_js_lock = bool(names.intersection({'pnpm-lock.yaml', 'yarn.lock'}))
     return unique_in_order(
         PACKAGE_MANAGER_BY_MANIFEST.get(Path(manifest).name)
         for manifest in manifests
+        if Path(manifest).name != 'package.json' or not has_stronger_js_lock
     )
 
 

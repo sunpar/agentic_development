@@ -5,6 +5,29 @@
     "slices": {
       "items": {
         "additionalProperties": true,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "slice_type": {
+                  "const": "review-only"
+                }
+              }
+            },
+            "then": {},
+            "else": {
+              "properties": {
+                "tests_to_read": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                }
+              }
+            }
+          }
+        ],
         "properties": {
           "acceptance_criteria": {
             "items": {
@@ -23,7 +46,7 @@
                 "trunk"
               ]
             },
-            "pattern": "^(?!/)(?!.*\\.\\.)[A-Za-z0-9._/-]+$",
+            "pattern": "^(?!(?:[Mm][Aa][Ii][Nn]|[Mm][Aa][Ss][Tt][Ee][Rr]|[Dd][Ee][Vv][Ee][Ll][Oo][Pp]|[Dd][Ee][Vv]|[Tt][Rr][Uu][Nn][Kk])$)(?!/)(?!.*\\.\\.)[A-Za-z0-9._/-]+$",
             "type": "string"
           },
           "dependencies": {
