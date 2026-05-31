@@ -172,6 +172,40 @@ fi
         self.assertEqual(report['comments'][0]['severity'], 'info')
         self.assertEqual(report['actionable_comments'], [])
 
+    def test_classifies_negated_changes_requested_as_info(self):
+        payload = {
+            'url': 'https://example.test/pr/7',
+            'comments': [
+                {
+                    'id': 1,
+                    'author': {'login': 'reviewer'},
+                    'body': 'No changes requested.',
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            input_json = td_path / 'pr.json'
+            output_json = td_path / 'review-report.json'
+            input_json.write_text(json.dumps(payload), encoding='utf-8')
+
+            result = run([
+                PY,
+                str(SCRIPT),
+                '--input-json',
+                str(input_json),
+                '--output-json',
+                str(output_json),
+                '--output-md',
+                str(td_path / 'review-report.md'),
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = json.loads(output_json.read_text())
+
+        self.assertEqual(report['comments'][0]['severity'], 'info')
+        self.assertEqual(report['actionable_comments'], [])
+
     def test_classifies_p2_findings_as_should_fix(self):
         payload = {
             'url': 'https://example.test/pr/7',

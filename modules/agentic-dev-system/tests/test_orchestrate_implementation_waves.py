@@ -416,16 +416,27 @@ pathlib.Path({str(marker)!r}).write_text('ran', encoding='utf-8')
             state = json.loads((run_dir / "run-state.json").read_text())
             self.assertEqual(state["execution_options"], {
                 "allow_codex": True,
+                "codex_bin": "codex",
+                "codex_profile": None,
+                "codex_extra_args": "",
                 "allow_pr": True,
+                "gh_bin": "gh",
+                "pr_base": None,
                 "allow_review_request": True,
                 "review_agents": "codex,copilot",
                 "allow_merge": True,
                 "no_merge": False,
+                "merge_gate_script": str(SCRIPT.parents[2] / "codebase-review-system" / "scripts" / "merge_gate.py"),
                 "merge_method": "rebase",
+                "ci_timeout_seconds": 600,
+                "ci_poll_seconds": 15,
+                "review_timeout_seconds": 600,
+                "review_thread_timeout_seconds": 0,
                 "max_parallel": 2,
                 "review_repair_attempts": 2,
                 "resolve_review_threads": True,
                 "delete_branch": True,
+                "worktree_dir": str((Path.home() / ".codex" / "worktrees" / "implementation").resolve()),
             })
 
     def test_allow_pr_commits_pushes_and_creates_pr_after_codex(self):
@@ -482,6 +493,134 @@ print('https://github.com/example/repo/pull/123')
             self.assertEqual(task_state["pr_number"], 123)
             self.assertEqual(task_state["pr_url"], "https://github.com/example/repo/pull/123")
             self.assertTrue(task_state["commit_sha"])
+
+    def test_allow_pr_tracks_codex_commits_against_task_base(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            add_bare_origin(td, repo)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            bin_dir = Path(td) / "bin"
+            bin_dir.mkdir()
+            codex = fake_codex_bin(bin_dir, """
+import pathlib
+import subprocess
+pathlib.Path('src').mkdir(exist_ok=True)
+pathlib.Path('src/task-001.py').write_text('implemented\\n', encoding='utf-8')
+subprocess.run(['git', 'add', 'src/task-001.py'], check=True)
+subprocess.run(['git', 'commit', '-m', 'codex internal commit'], check=True)
+""")
+            gh = fake_gh_bin(bin_dir, """
+import sys
+if sys.argv[1:3] == ['pr', 'create']:
+    print('https://github.com/example/repo/pull/123')
+""")
+            item = task("TASK-001", 1, "feature/task-001-core-flow")
+            item["verification_commands"] = ["python3 -c \"from pathlib import Path; assert Path('src/task-001.py').exists()\""]
+            write_plan(plan, [item])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--allow-pr",
+                "--codex-bin",
+                str(codex),
+                "--gh-bin",
+                str(gh),
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            task_state = state["tasks"]["TASK-001"]
+            self.assertEqual(task_state["status"], "pr_ready")
+            self.assertEqual(task_state["changed_files"], ["src/task-001.py"])
+            self.assertEqual(git(worktrees / "feature-task-001-core-flow", "log", "-1", "--pretty=%s").stdout.strip(), "codex internal commit")
+
+    def test_resume_retries_pr_creation_after_post_commit_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            add_bare_origin(td, repo)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            bin_dir = Path(td) / "bin"
+            fail_bin_dir = Path(td) / "fail-bin"
+            gh_marker = Path(td) / "gh-first-failed"
+            bin_dir.mkdir()
+            fail_bin_dir.mkdir()
+            codex = fake_codex_bin(bin_dir, """
+import pathlib
+pathlib.Path('src').mkdir(exist_ok=True)
+pathlib.Path('src/task-001.py').write_text('implemented\\n', encoding='utf-8')
+""")
+            failing_codex = fake_codex_bin(fail_bin_dir, "import sys\nsys.exit(99)")
+            gh = fake_gh_bin(bin_dir, f"""
+import pathlib
+import sys
+if sys.argv[1:3] == ['pr', 'create']:
+    marker = pathlib.Path({str(gh_marker)!r})
+    if not marker.exists():
+        marker.write_text('failed', encoding='utf-8')
+        print('transient create failure', file=sys.stderr)
+        raise SystemExit(2)
+    print('https://github.com/example/repo/pull/123')
+""")
+            item = task("TASK-001", 1, "feature/task-001-core-flow")
+            item["verification_commands"] = ["python3 -c \"from pathlib import Path; assert Path('src/task-001.py').exists()\""]
+            write_plan(plan, [item])
+
+            first = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--allow-pr",
+                "--codex-bin",
+                str(codex),
+                "--gh-bin",
+                str(gh),
+            ], cwd=repo)
+            resumed = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--allow-pr",
+                "--codex-bin",
+                str(failing_codex),
+                "--gh-bin",
+                str(gh),
+                "--resume",
+                "--reuse-worktrees",
+            ], cwd=repo)
+
+            self.assertNotEqual(first.returncode, 0)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            task_state = state["tasks"]["TASK-001"]
+            self.assertEqual(task_state["status"], "pr_ready")
+            self.assertEqual(task_state["pr_number"], 123)
 
     def test_allow_pr_requires_allow_codex(self):
         with tempfile.TemporaryDirectory() as td:
@@ -628,11 +767,32 @@ elif sys.argv[1:3] == ['pr', 'comment']:
             calls = gh_log.read_text()
             self.assertIn("pr comment 123", calls)
             self.assertIn("@codex please review", calls)
-            self.assertIn("@copilot please review", calls)
+            self.assertIn("pr edit 123 --add-reviewer @copilot", calls)
             state = json.loads((run_dir / "run-state.json").read_text())
             requests = state["tasks"]["TASK-001"]["review_requests"]
             self.assertEqual([item["agent"] for item in requests], ["codex", "copilot"])
             self.assertTrue(all(item["returncode"] == 0 for item in requests))
+
+    def test_allow_review_request_rejects_empty_reviewer_list(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            plan = repo / "implementation-plan.json"
+            write_plan(plan, [task("TASK-001", 1, "feature/task-001-core-flow")])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--dry-run",
+                "--allow-codex",
+                "--allow-pr",
+                "--allow-review-request",
+                "--review-agents",
+                "",
+            ], cwd=repo)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--review-agents must include at least one agent", result.stderr + result.stdout)
 
     def test_allow_review_request_requires_allow_pr(self):
         with tempfile.TemporaryDirectory() as td:

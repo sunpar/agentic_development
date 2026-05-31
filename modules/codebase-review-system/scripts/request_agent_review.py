@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import shlex
 import subprocess
+import types
 
 
 def run(cmd):
@@ -19,11 +20,9 @@ def build_review_body(providers, focus):
     lines = []
     if 'codex' in providers:
         lines.append(f'@codex review for {focus}' if focus else '@codex review')
-    if 'copilot' in providers:
-        lines.append(f'@copilot please review this PR for {focus}' if focus else '@copilot please review this PR')
     body = '\n'.join(lines)
     focus_items = [item.strip() for item in focus.split(',') if item.strip()]
-    if focus_items:
+    if focus_items and body:
         body += '\n\nFocus:\n- ' + '\n- '.join(focus_items)
     return body
 
@@ -38,8 +37,39 @@ def review_command(pr_number, providers, focus, repo=None):
     return cmd
 
 
+def copilot_review_command(pr_number, repo=None):
+    cmd = ['gh', 'pr', 'edit']
+    if pr_number is not None:
+        cmd.append(str(pr_number))
+    cmd += ['--add-reviewer', '@copilot']
+    if repo:
+        cmd += ['--repo', repo]
+    return cmd
+
+
+def review_commands(pr_number, providers, focus, repo=None):
+    commands = []
+    if 'codex' in providers:
+        commands.append(review_command(pr_number, {'codex'}, focus, repo=repo))
+    if 'copilot' in providers:
+        commands.append(copilot_review_command(pr_number, repo=repo))
+    return commands
+
+
 def post_request(pr_number, providers, focus, repo=None):
-    return run(review_command(pr_number, providers, focus, repo=repo))
+    results = [run(cmd) for cmd in review_commands(pr_number, providers, focus, repo=repo)]
+    returncode = next((result.returncode for result in results if result.returncode), 0)
+    return types.SimpleNamespace(returncode=returncode, results=results)
+
+
+def dry_run_text(pr_number, providers, focus, repo=None):
+    lines = []
+    for cmd in review_commands(pr_number, providers, focus, repo=repo):
+        lines.append('DRY-RUN: would run ' + shlex.join(cmd))
+    body = build_review_body({'codex'} if 'codex' in providers else set(), focus)
+    if body:
+        lines.append(body)
+    return '\n'.join(lines)
 
 
 def main():
@@ -52,13 +82,11 @@ def main():
     args = parser.parse_args()
 
     providers = providers_from_arg(args.provider)
-    cmd = review_command(args.pr_number, providers, args.focus, repo=args.repo)
     if args.dry_run:
-        print('DRY-RUN: would run ' + shlex.join(cmd))
-        print(build_review_body(providers, args.focus))
+        print(dry_run_text(args.pr_number, providers, args.focus, repo=args.repo))
         return 0
 
-    result = run(cmd)
+    result = post_request(args.pr_number, providers, args.focus, repo=args.repo)
     return result.returncode
 
 

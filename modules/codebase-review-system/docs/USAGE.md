@@ -153,7 +153,7 @@ python3 ~/.codex/codebase-review-factory/scripts/poll_review_comments.py \
   --output-md actionable-review-report.md
 ```
 
-For deterministic or offline classification, pass a saved `gh pr view --json comments,reviews,url,number,title` payload:
+For deterministic or offline classification, pass a saved `gh pr view --json comments,latestReviews,url,number,title` payload:
 
 ```bash
 python3 ~/.codex/codebase-review-factory/scripts/poll_review_comments.py \

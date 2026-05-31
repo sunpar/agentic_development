@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 
@@ -19,10 +20,22 @@ MUST_FIX_TERMS = [
 ]
 SHOULD_FIX_TERMS = ['should', 'please', 'need', 'fix', 'change', 'requested']
 CLARIFY_TERMS = ['clarify', 'unclear', 'question', '?']
+NONBLOCKING_RE = [
+    re.compile(r'\bnon[- ]blocking\b\s*:?', re.I),
+    re.compile(r'\bno\s+changes?\s+requested\b\.?', re.I),
+    re.compile(r'\bno\s+(?:p0|p1|p2|critical|blocking|blocker|must[- ]?fix)\s+(?:findings?|issues?|comments?)\b', re.I),
+]
+
+
+def strip_nonblocking_phrases(body):
+    text = str(body or '')
+    for pattern in NONBLOCKING_RE:
+        text = pattern.sub('', text)
+    return text
 
 
 def classify(body):
-    text = body.lower()
+    text = strip_nonblocking_phrases(body).lower()
     if any(term in text for term in MUST_FIX_TERMS):
         return 'must_fix'
     if any(term in text for term in CLARIFY_TERMS):
@@ -32,18 +45,33 @@ def classify(body):
     return 'note'
 
 
+def normalize_classification(item):
+    severity = str(item.get('severity') or '').lower()
+    if severity in {'must_fix', 'should_fix'}:
+        stripped = strip_nonblocking_phrases(item.get('body')).strip()
+        if not re.search(r'[A-Za-z0-9]', stripped):
+            return 'note'
+        return severity
+    return classify(item.get('body') or '')
+
+
 def normalize_items(payload):
     items = []
-    for idx, item in enumerate(payload.get('actionable', []), start=1):
+    source_items = payload.get('actionable_comments')
+    if source_items is None:
+        source_items = payload.get('actionable', [])
+    for idx, item in enumerate(source_items or [], start=1):
         body = (item.get('body') or '').strip()
         if not body:
             continue
         items.append({
             'id': idx,
-            'classification': classify(body),
+            'classification': normalize_classification(item),
             'source': item.get('source', 'unknown'),
             'author': item.get('author', 'unknown'),
             'url': item.get('url', ''),
+            'path': item.get('path'),
+            'line': item.get('line'),
             'body': body,
         })
     return items
@@ -56,7 +84,12 @@ def render_section(title, items):
         return lines
     for item in items:
         url = f" ({item['url']})" if item.get('url') else ''
-        lines.append(f"{item['id']}. {item['author']} [{item['source']}]{url}: {item['body']}")
+        location = ''
+        if item.get('path'):
+            location = f" at {item['path']}"
+            if item.get('line'):
+                location += f":{item['line']}"
+        lines.append(f"{item['id']}. {item['author']} [{item['source']}]{location}{url}: {item['body']}")
     return lines
 
 

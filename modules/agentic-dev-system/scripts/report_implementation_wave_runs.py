@@ -113,6 +113,14 @@ def task_by_id(tasks):
     }
 
 
+def item_by_wave(waves):
+    return {
+        str(item.get("wave")): item
+        for item in waves
+        if isinstance(item, dict) and item.get("wave") is not None
+    }
+
+
 def fill_missing(base, fallback, keys):
     merged = dict(base)
     for key in keys:
@@ -151,9 +159,34 @@ def merge_task_details(summary_tasks, state_tasks):
 
 
 def merge_wave_details(summary_waves, state_waves):
-    if summary_waves:
-        return summary_waves
-    return state_waves
+    state_by_wave = item_by_wave(state_waves)
+    merged = []
+    seen = set()
+    detail_keys = ("status", "task_ids", "started_at", "completed_at", "error")
+    for item in summary_waves:
+        wave_id = str(item.get("wave"))
+        seen.add(wave_id)
+        fallback = state_by_wave.get(wave_id, {})
+        if fallback.get("status") in {"failed", "error"} and item.get("status") not in {"failed", "error"}:
+            merged_item = fill_missing(fallback, item, detail_keys)
+        else:
+            merged_item = fill_missing(item, fallback, detail_keys)
+        merged.append(merged_item)
+    for wave_id, item in state_by_wave.items():
+        if wave_id not in seen:
+            merged.append(item)
+    return merged
+
+
+def recompute_totals(summary):
+    enriched = dict(summary)
+    tasks = [item for item in enriched.get("tasks") or [] if isinstance(item, dict)]
+    enriched["totals"] = {
+        **dict(enriched.get("totals") or {}),
+        "tasks": len(tasks),
+        "by_status": status_counts(tasks),
+    }
+    return enriched
 
 
 def enrich_summary_from_state(summary, state_summary):
@@ -173,7 +206,7 @@ def enrich_summary_from_state(summary, state_summary):
         [item for item in enriched.get("waves") or [] if isinstance(item, dict)],
         [item for item in state_summary.get("waves") or [] if isinstance(item, dict)],
     )
-    return enriched
+    return recompute_totals(enriched)
 
 
 def common_worktree_dir(tasks):
@@ -190,16 +223,36 @@ def execution_resume_args(summary):
     args = []
     if options.get("allow_codex"):
         args.append("--allow-codex")
+        if options.get("codex_bin"):
+            args += ["--codex-bin", options.get("codex_bin")]
+        if options.get("codex_profile"):
+            args += ["--codex-profile", options.get("codex_profile")]
+        if options.get("codex_extra_args"):
+            args += ["--codex-extra-args", options.get("codex_extra_args")]
     if options.get("allow_pr"):
         args.append("--allow-pr")
+        if options.get("gh_bin"):
+            args += ["--gh-bin", options.get("gh_bin")]
+        if options.get("pr_base"):
+            args += ["--pr-base", options.get("pr_base")]
     if options.get("allow_review_request"):
         args.append("--allow-review-request")
         if options.get("review_agents"):
             args += ["--review-agents", options.get("review_agents")]
     if options.get("allow_merge"):
         args.append("--allow-merge")
+        if options.get("merge_gate_script"):
+            args += ["--merge-gate-script", options.get("merge_gate_script")]
         if options.get("merge_method"):
             args += ["--merge-method", options.get("merge_method")]
+        for key, flag in (
+            ("ci_timeout_seconds", "--ci-timeout-seconds"),
+            ("ci_poll_seconds", "--ci-poll-seconds"),
+            ("review_timeout_seconds", "--review-timeout-seconds"),
+            ("review_thread_timeout_seconds", "--review-thread-timeout-seconds"),
+        ):
+            if options.get(key) is not None:
+                args += [flag, options.get(key)]
         if options.get("delete_branch"):
             args.append("--delete-branch")
     if options.get("max_parallel") is not None:
@@ -219,7 +272,10 @@ def resume_commands(summary, failed_tasks, tasks):
     if not plan_path or not run_dir or not failed_tasks:
         return []
     by_id = task_by_id(tasks)
-    worktree_dir = common_worktree_dir(tasks)
+    options = summary.get("execution_options") or {}
+    worktree_dir = options.get("worktree_dir") or common_worktree_dir(tasks)
+    selected_task_ids = list(summary.get("selected_task_ids") or [])
+    task_args = selected_task_ids or failed_tasks
     commands = []
     for task_id in failed_tasks:
         task = by_id.get(task_id, {})
@@ -232,14 +288,18 @@ def resume_commands(summary, failed_tasks, tasks):
         ]
         if task.get("wave") is not None:
             cmd += ["--wave", task.get("wave")]
-        cmd += ["--task", task_id]
+        for selected_task_id in task_args:
+            cmd += ["--task", selected_task_id]
         if worktree_dir:
             cmd += ["--worktree-dir", worktree_dir]
         if summary.get("dry_run"):
             cmd.append("--dry-run")
         cmd += execution_resume_args(summary)
         cmd += ["--resume", "--reuse-worktrees"]
-        commands.append(shell_join(cmd))
+        command = shell_join(cmd)
+        if summary.get("repo"):
+            command = f"cd {shlex.quote(str(summary['repo']))} && {command}"
+        commands.append(command)
     return commands
 
 

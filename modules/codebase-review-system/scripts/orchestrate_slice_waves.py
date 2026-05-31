@@ -729,6 +729,7 @@ def execution_options(args, merge_enabled):
         'delete_branch': bool(args.delete_branch),
         'max_parallel': args.max_parallel,
         'setup_commands': list(args.setup_command or []),
+        'worktree_dir': str(Path(args.worktree_dir).expanduser().resolve()),
     }
 
 

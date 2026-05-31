@@ -212,6 +212,57 @@ class ValidatePlanTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertTrue(any('duplicate task branch' in e for e in payload['errors']))
 
+    def test_branch_namespace_prefix_conflicts_are_invalid(self):
+        plan = self.minimal_plan(
+            [
+                self.minimal_task('T1', 1, branch='feature/shared'),
+                self.minimal_task('T2', 2, branch='feature/shared/sub', dependencies=['T1']),
+            ],
+            [
+                {'wave': 1, 'task_ids': ['T1'], 'post_wave_verification': ['pytest']},
+                {'wave': 2, 'task_ids': ['T2'], 'post_wave_verification': ['pytest']},
+            ],
+        )
+
+        result = self.run_script(self.write_plan(plan))
+
+        self.assertNotEqual(result.returncode, 0)
+        payload = json.loads(result.stdout)
+        self.assertTrue(any('branch namespace conflict' in e for e in payload['errors']))
+
+    def test_sanitized_worktree_path_collisions_are_invalid(self):
+        plan = self.minimal_plan(
+            [
+                self.minimal_task('T1', 1, branch='feature/a-b'),
+                self.minimal_task('T2', 2, branch='feature/a/b', dependencies=['T1']),
+            ],
+            [
+                {'wave': 1, 'task_ids': ['T1'], 'post_wave_verification': ['pytest']},
+                {'wave': 2, 'task_ids': ['T2'], 'post_wave_verification': ['pytest']},
+            ],
+        )
+
+        result = self.run_script(self.write_plan(plan))
+
+        self.assertNotEqual(result.returncode, 0)
+        payload = json.loads(result.stdout)
+        self.assertTrue(any('worktree path collision' in e for e in payload['errors']))
+
+    def test_wave_integration_order_must_match_task_ids(self):
+        plan = self.minimal_plan(
+            [
+                self.minimal_task('T1', 1),
+                self.minimal_task('T2', 1),
+            ],
+            [{'wave': 1, 'task_ids': ['T1', 'T2'], 'integration_order': ['T1'], 'post_wave_verification': ['pytest']}],
+        )
+
+        result = self.run_script(self.write_plan(plan))
+
+        self.assertNotEqual(result.returncode, 0)
+        payload = json.loads(result.stdout)
+        self.assertTrue(any('integration_order must match task_ids' in e for e in payload['errors']))
+
     def test_protected_task_branch_names_are_invalid(self):
         plan = self.minimal_plan(
             [self.minimal_task('T1', 1, branch='main')],

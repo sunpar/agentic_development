@@ -15,6 +15,7 @@ SHOULD_FIX_RE = re.compile(r'\b(should[- ]?fix|should change|please fix|needs? f
 P2_RE = re.compile(r'(?:\[p2\]|\bp2\b)', re.I)
 NONBLOCKING_RE = [
     re.compile(r'\bnon[- ]blocking\b\s*:?', re.I),
+    re.compile(r'\bno\s+changes?\s+requested\b\.?', re.I),
     re.compile(r'\bno\s+(?:p0|p1|p2|critical|blocking|blocker|must[- ]?fix|changes requested)\s+(?:findings?|issues?|comments?)\b', re.I),
     re.compile(r'\b(?:p0|p1|p2|critical|blocking|blocker|must[- ]?fix|changes requested)\s+(?:findings?|issues?)\s*:\s*(?:none|no|0|zero)\b', re.I),
     re.compile(r"\bdidn'?t find (?:any )?(?:major|blocking|critical) issues?\b", re.I),

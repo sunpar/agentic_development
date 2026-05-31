@@ -51,9 +51,13 @@ def unique_in_order(values):
 
 def package_tools(inv):
     declared = inv.get('package_managers') or []
+    declared_js = set(declared).intersection({'pnpm', 'yarn'})
+    manifest_names = {Path(manifest).name for manifest in inv.get('manifests', [])}
+    stronger_js_lock = bool(manifest_names.intersection({'pnpm-lock.yaml', 'yarn.lock'})) or bool(declared_js)
     inferred = [
         PACKAGE_BY_MANIFEST.get(Path(manifest).name)
         for manifest in inv.get('manifests', [])
+        if Path(manifest).name != 'package.json' or not stronger_js_lock
     ]
     return unique_in_order([*declared, *inferred])
 
