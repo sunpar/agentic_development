@@ -182,6 +182,8 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
                     "allow_merge": True,
                     "merge_method": "squash",
                     "max_parallel": 3,
+                    "review_repair_attempts": 2,
+                    "resolve_review_threads": False,
                     "delete_branch": True,
                 },
                 "tasks": {
@@ -196,6 +198,9 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
                         "review_requests": [
                             {"agent": "codex", "returncode": 0},
                             {"agent": "copilot", "returncode": 0},
+                        ],
+                        "review_repair_attempts": [
+                            {"attempt": 1, "status": "pushed"},
                         ],
                         "merge": {
                             "returncode": 0,
@@ -237,6 +242,7 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertEqual(aggregate["totals"]["tasks"], 4)
         self.assertEqual(aggregate["totals"]["prs"], 1)
         self.assertEqual(aggregate["totals"]["review_requests"], 2)
+        self.assertEqual(aggregate["totals"]["review_repairs"], 1)
         self.assertEqual(aggregate["totals"]["merged_tasks"], 1)
         self.assertEqual(aggregate["totals"]["failed_waves"], 1)
         self.assertEqual(aggregate["totals"]["by_status"]["planned"], 1)
@@ -250,6 +256,7 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertEqual(aggregate["runs"][1]["branches"], ["feature/task-003", "feature/task-004"])
         self.assertEqual(aggregate["runs"][1]["pr_numbers"], [123])
         self.assertEqual(aggregate["runs"][1]["review_request_count"], 2)
+        self.assertEqual(aggregate["runs"][1]["review_repair_count"], 1)
         self.assertEqual(aggregate["runs"][1]["merged_tasks"], 1)
         self.assertEqual(aggregate["runs"][1]["merge_log_paths"], [
             str(second / "tasks/TASK-003/merge.stderr.log"),
@@ -273,6 +280,7 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertIn("--allow-review-request --review-agents codex,copilot", resume)
         self.assertIn("--allow-merge --merge-method squash --delete-branch", resume)
         self.assertIn("--max-parallel 3", resume)
+        self.assertIn("--review-repair-attempts 2 --no-resolve-review-threads", resume)
         self.assertIn("--resume --reuse-worktrees", resume)
         self.assertIn("# Implementation Wave Run Report", markdown)
         self.assertIn("repo-20260529T120000Z", markdown)
@@ -280,6 +288,7 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertIn("failed_waves=1", markdown)
         self.assertIn("PRs=#123", markdown)
         self.assertIn("review_requests=2", markdown)
+        self.assertIn("review_repairs=1", markdown)
         self.assertIn("merged=1", markdown)
         self.assertIn("Resume:", markdown)
         self.assertIn("--task TASK-004", markdown)

@@ -76,6 +76,7 @@ def summary_from_state(run_dir):
             "pr_number": item.get("pr_number"),
             "pr_url": item.get("pr_url"),
             "review_requests": item.get("review_requests"),
+            "review_repair_attempts": item.get("review_repair_attempts"),
             "merge": item.get("merge"),
             "merged_at": item.get("merged_at"),
             "error": item.get("error"),
@@ -134,6 +135,7 @@ def merge_task_details(summary_tasks, state_tasks):
         "pr_number",
         "pr_url",
         "review_requests",
+        "review_repair_attempts",
         "merge",
         "merged_at",
         "error",
@@ -202,6 +204,10 @@ def execution_resume_args(summary):
             args.append("--delete-branch")
     if options.get("max_parallel") is not None:
         args += ["--max-parallel", options.get("max_parallel")]
+    if options.get("review_repair_attempts") is not None:
+        args += ["--review-repair-attempts", options.get("review_repair_attempts")]
+    if options.get("resolve_review_threads") is False:
+        args.append("--no-resolve-review-threads")
     if options.get("no_merge"):
         args.append("--no-merge")
     return args
@@ -251,6 +257,15 @@ def review_request_count(tasks):
         requests = item.get("review_requests")
         if isinstance(requests, list):
             total += len(requests)
+    return total
+
+
+def review_repair_count(tasks):
+    total = 0
+    for item in tasks:
+        repairs = item.get("review_repair_attempts")
+        if isinstance(repairs, list):
+            total += len(repairs)
     return total
 
 
@@ -306,6 +321,7 @@ def load_run_summary(run_dir):
     selected_waves = list(summary.get("selected_waves") or [])
     prs = pr_numbers(tasks)
     reviews = review_request_count(tasks)
+    repairs = review_repair_count(tasks)
     merges = merged_task_count(tasks)
     return {
         "name": run_dir.name,
@@ -331,6 +347,7 @@ def load_run_summary(run_dir):
         "prompt_paths": unique_sorted(item.get("prompt_path") for item in tasks),
         "pr_numbers": prs,
         "review_request_count": reviews,
+        "review_repair_count": repairs,
         "merged_tasks": merges,
         "merge_log_paths": merge_log_paths(tasks),
         "resume_commands": resume_commands(summary, failed_tasks, tasks),
@@ -360,6 +377,7 @@ def aggregate_runs(runs_root):
             "tasks": sum(run["totals"]["tasks"] for run in runs),
             "prs": sum(len(run["pr_numbers"]) for run in runs),
             "review_requests": sum(run["review_request_count"] for run in runs),
+            "review_repairs": sum(run["review_repair_count"] for run in runs),
             "merged_tasks": sum(run["merged_tasks"] for run in runs),
             "failed_waves": sum(len(run["failed_waves"]) for run in runs),
             "by_status": by_status,
@@ -384,6 +402,7 @@ def write_markdown(path, aggregate):
         f"- Tasks: {aggregate['totals']['tasks']}",
         f"- PRs: {aggregate['totals']['prs']}",
         f"- Review requests: {aggregate['totals']['review_requests']}",
+        f"- Review repairs: {aggregate['totals']['review_repairs']}",
         f"- Merged tasks: {aggregate['totals']['merged_tasks']}",
         f"- Failed waves: {aggregate['totals']['failed_waves']}",
     ]
@@ -409,6 +428,8 @@ def write_markdown(path, aggregate):
             line += "; PRs=" + ", ".join(f"#{number}" for number in run["pr_numbers"])
         if run["review_request_count"]:
             line += f"; review_requests={run['review_request_count']}"
+        if run["review_repair_count"]:
+            line += f"; review_repairs={run['review_repair_count']}"
         if run["merged_tasks"]:
             line += f"; merged={run['merged_tasks']}"
         lines.append(line)

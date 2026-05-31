@@ -312,14 +312,14 @@ def changed_files(worktree):
     return files
 
 
-def commit_task(worktree, task, files):
+def commit_task(worktree, task, files, message=None):
     if not files:
         return None
     add = run_cmd(["git", "add", "--", *files], cwd=worktree)
     if add.returncode:
         raise RuntimeError(add.stderr or add.stdout or "git add failed")
     title = str(task.get("title") or task["id"]).strip()
-    commit = run_cmd(["git", "commit", "-m", f"{task['id']}: {title}"], cwd=worktree)
+    commit = run_cmd(["git", "commit", "-m", message or f"{task['id']}: {title}"], cwd=worktree)
     if commit.returncode:
         raise RuntimeError(commit.stderr or commit.stdout or "git commit failed")
     head = run_cmd(["git", "rev-parse", "HEAD"], cwd=worktree)
@@ -412,7 +412,7 @@ def request_review_comments(args, worktree, pr, agents):
     return records
 
 
-def run_merge_gate(args, worktree, task_dir, pr, expected_head_sha, require_review_after=None):
+def run_merge_gate(args, worktree, task_dir, pr, expected_head_sha, require_review_after=None, attempt=0):
     pr_target = pr.get("number") or pr.get("url")
     if not pr_target:
         raise RuntimeError("created PR has no number or URL for merge gate")
@@ -442,8 +442,9 @@ def run_merge_gate(args, worktree, task_dir, pr, expected_head_sha, require_revi
     if args.delete_branch:
         cmd.append("--delete-branch")
     result = run_cmd(cmd)
-    stdout_log = task_dir / "merge.stdout.log"
-    stderr_log = task_dir / "merge.stderr.log"
+    suffix = "" if attempt == 0 else f".attempt-{attempt + 1}"
+    stdout_log = task_dir / f"merge{suffix}.stdout.log"
+    stderr_log = task_dir / f"merge{suffix}.stderr.log"
     stdout_log.write_text(result.stdout, encoding="utf-8")
     stderr_log.write_text(result.stderr, encoding="utf-8")
     return {
@@ -452,6 +453,155 @@ def run_merge_gate(args, worktree, task_dir, pr, expected_head_sha, require_revi
         "stdout_log": str(stdout_log),
         "stderr_log": str(stderr_log),
     }
+
+
+def is_review_thread_gate_failure(output):
+    text = (output or "").lower()
+    return "unresolved review threads" in text or "unresolved must-fix comments" in text
+
+
+def parse_pr_owner_name(pr):
+    url = str(pr.get("url") or "")
+    match = re.search(r"github\.com[:/]+([^/]+)/([^/]+)/pull/\d+", url)
+    if match:
+        return match.group(1), match.group(2).removesuffix(".git")
+    return None, None
+
+
+def origin_owner_name(worktree):
+    result = run_cmd(["git", "remote", "get-url", "origin"], cwd=worktree)
+    if result.returncode:
+        return None, None
+    remote = result.stdout.strip()
+    match = re.search(r"github\.com[:/]+([^/]+)/([^/.]+)(?:\.git)?$", remote)
+    if not match:
+        return None, None
+    return match.group(1), match.group(2)
+
+
+def gh_json_required(args, cmd, cwd):
+    result = run_cmd(cmd, cwd=cwd)
+    if result.returncode:
+        raise RuntimeError(result.stderr or result.stdout or "gh command failed")
+    try:
+        return json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"gh returned invalid JSON: {exc}") from exc
+
+
+def active_review_threads(args, worktree, pr):
+    owner, name = parse_pr_owner_name(pr)
+    if not owner or not name:
+        owner, name = origin_owner_name(worktree)
+    if not owner or not name:
+        raise RuntimeError("cannot determine GitHub owner/repo for review thread repair")
+    number = pr.get("number") or parse_pr_number(pr.get("url"))
+    if not number:
+        raise RuntimeError("created PR has no number for review thread repair")
+    query = """
+query($owner:String!, $name:String!, $number:Int!, $after:String) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      reviewThreads(first:100, after:$after) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          startLine
+          comments(first:20) {
+            nodes {
+              body
+              createdAt
+              url
+              author { login }
+            }
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}
+"""
+    threads = []
+    after = ""
+    while True:
+        cmd = [
+            args.gh_bin,
+            "api",
+            "graphql",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
+            "-F",
+            f"number={int(number)}",
+            "-f",
+            "query=" + query,
+        ]
+        if after:
+            cmd += ["-f", f"after={after}"]
+        data = gh_json_required(args, cmd, cwd=worktree)
+        page = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {}).get("reviewThreads", {})
+        threads.extend(page.get("nodes") or [])
+        page_info = page.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor") or ""
+        if not after:
+            raise RuntimeError("review thread pagination missing endCursor")
+    return [
+        thread
+        for thread in threads
+        if thread.get("isResolved") is False and not thread.get("isOutdated")
+    ]
+
+
+def resolve_review_thread(args, worktree, thread_id):
+    mutation = """
+mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    thread { id isResolved }
+  }
+}
+"""
+    result = run_cmd([
+        args.gh_bin,
+        "api",
+        "graphql",
+        "-f",
+        "query=" + mutation,
+        "-f",
+        f"threadId={thread_id}",
+    ], cwd=worktree)
+    return {
+        "thread_id": thread_id,
+        "returncode": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+
+
+def review_repair_prompt(task, plan_path, task_dir, threads_path):
+    return "\n".join([
+        f"Use task-implementor to address active PR review threads for {task['id']}.",
+        f"Task ID: {task['id']}",
+        f"Implementation plan: {plan_path}",
+        f"Active review threads JSON: {threads_path}",
+        f"Write repair notes/artifacts under this external artifact directory, not inside the target repo: {task_dir}",
+        f"Write set: {task.get('write_set', [])}",
+        f"Non-goals: {task.get('non_goals', [])}",
+        f"Verification commands: {task.get('verification_commands', [])}",
+        "Verify every thread against the current code.",
+        "Apply only valid in-scope fixes for the task.",
+        "If a thread is invalid or out of scope, write evidence in the external artifact directory and do not broaden scope.",
+        "Do not create, update, or merge PRs; the orchestrator owns PR, review request, thread resolution, and merge steps.",
+    ]) + "\n"
 
 
 def write_task_artifacts(run_dir, plan_path, task):
@@ -549,6 +699,7 @@ def write_summary(run_dir, state):
                 "pr_number": item.get("pr_number"),
                 "review_requested_at": item.get("review_requested_at"),
                 "review_requests": item.get("review_requests"),
+                "review_repair_attempts": item.get("review_repair_attempts"),
                 "merge": item.get("merge"),
                 "merged_at": item.get("merged_at"),
                 "error": item.get("error"),
@@ -658,6 +809,8 @@ def execution_options(args, merge_enabled):
         "no_merge": bool(args.no_merge),
         "merge_method": args.merge_method,
         "max_parallel": args.max_parallel,
+        "review_repair_attempts": args.review_repair_attempts,
+        "resolve_review_threads": bool(args.resolve_review_threads),
         "delete_branch": bool(args.delete_branch),
     }
 
@@ -833,6 +986,117 @@ def run_task(task, args, repo, worktree_dir, base_ref, run_dir, plan_path, state
         return current_task_state(state, state_lock, task_id)
 
 
+def repair_review_threads(task, args, run_dir, state, state_lock, attempt):
+    task_id = task["id"]
+    task_state = current_task_state(state, state_lock, task_id)
+    worktree = Path(task_state["worktree"])
+    pr = {
+        "url": task_state.get("pr_url"),
+        "number": task_state.get("pr_number"),
+    }
+    task_dir = run_dir / "tasks" / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    threads = active_review_threads(args, worktree, pr)
+    repair_record = {
+        "attempt": attempt,
+        "started_at": now_utc(),
+        "pr_number": pr.get("number"),
+        "base_commit_sha": task_state.get("commit_sha"),
+        "active_thread_count": len(threads),
+    }
+    if not threads:
+        repair_record["status"] = "no_active_threads"
+        attempts = list(task_state.get("review_repair_attempts") or [])
+        attempts.append(repair_record)
+        checkpoint_task_state(run_dir, state, state_lock, task_id, {"review_repair_attempts": attempts})
+        return False
+
+    threads_path = task_dir / f"review-threads-attempt-{attempt}.json"
+    write_json(threads_path, {"threads": threads})
+    plan_path = Path(state.get("implementation_plan") or "")
+    prompt = review_repair_prompt(task, plan_path, task_dir, threads_path)
+    codex = run_cmd(codex_command(args, prompt), cwd=worktree)
+    (task_dir / f"review-repair-{attempt}.stdout.log").write_text(codex.stdout, encoding="utf-8")
+    (task_dir / f"review-repair-{attempt}.stderr.log").write_text(codex.stderr, encoding="utf-8")
+    if codex.returncode:
+        raise RuntimeError(f"{task_id} review repair attempt {attempt} codex exited {codex.returncode}")
+
+    verify = verification_results(task.get("verification_commands", []), worktree)
+    write_json(task_dir / f"review-repair-{attempt}.verification.json", verify)
+    failed = failed_verification(verify)
+    if failed:
+        raise RuntimeError(f"{task_id} review repair attempt {attempt} verification failed: {failed['command']}")
+    files = changed_files(worktree)
+
+    if not files:
+        remaining = active_review_threads(args, worktree, pr)
+        repair_record.update({
+            "status": "no_changes",
+            "completed_at": now_utc(),
+            "remaining_thread_count": len(remaining),
+            "verification": verify,
+        })
+        attempts = list(current_task_state(state, state_lock, task_id).get("review_repair_attempts") or [])
+        attempts.append(repair_record)
+        checkpoint_task_state(run_dir, state, state_lock, task_id, {"review_repair_attempts": attempts})
+        if remaining:
+            raise RuntimeError(f"{task_id} review repair attempt {attempt} produced no changes with {len(remaining)} active threads remaining")
+        return True
+
+    commit_sha = commit_task(
+        worktree,
+        task,
+        files,
+        message=f"{task_id}: address review feedback",
+    )
+    push_branch(worktree, task_state["branch"])
+    active_after_repair = active_review_threads(args, worktree, pr)
+    active_after_repair_ids = {thread.get("id") for thread in active_after_repair if thread.get("id")}
+    resolved_threads = []
+    skipped_active_threads = []
+    if getattr(args, "resolve_review_threads", True):
+        for thread in threads:
+            thread_id = thread.get("id")
+            if not thread_id:
+                continue
+            if thread_id in active_after_repair_ids:
+                skipped_active_threads.append(thread_id)
+            else:
+                resolved_threads.append(resolve_review_thread(args, worktree, thread_id))
+        write_json(task_dir / f"review-repair-{attempt}.resolved-threads.json", resolved_threads)
+    review_requests = request_review_comments(args, worktree, pr, review_agents(args.review_agents)) if args.allow_review_request else None
+
+    repair_record.update({
+        "status": "pushed",
+        "completed_at": now_utc(),
+        "commit_sha": commit_sha,
+        "changed_files": files,
+        "verification": verify,
+        "threads_path": str(threads_path),
+        "active_thread_count_after_repair": len(active_after_repair),
+        "skipped_active_threads": skipped_active_threads,
+        "resolved_threads": resolved_threads,
+        "review_requests": review_requests,
+    })
+    latest = current_task_state(state, state_lock, task_id)
+    attempts = list(latest.get("review_repair_attempts") or [])
+    attempts.append(repair_record)
+    updates = {
+        "status": "pr_ready",
+        "commit_sha": commit_sha,
+        "changed_files": files,
+        "review_repair_attempts": attempts,
+        "completed_at": now_utc(),
+    }
+    if review_requests:
+        updates.update({
+            "review_requested_at": now_utc(),
+            "review_requests": review_requests,
+        })
+    checkpoint_task_state(run_dir, state, state_lock, task_id, updates)
+    return True
+
+
 def merge_ready_task(task, args, run_dir, state, state_lock):
     task_id = task["id"]
     task_state = current_task_state(state, state_lock, task_id)
@@ -848,43 +1112,57 @@ def merge_ready_task(task, args, run_dir, state, state_lock):
         "number": task_state.get("pr_number"),
     }
     try:
-        if args.allow_review_request and not task_state.get("review_requests"):
-            requests = request_review_comments(args, Path(task_state["worktree"]), pr, review_agents(args.review_agents))
-            task_state = checkpoint_task_state(
-                run_dir,
-                state,
-                state_lock,
-                task_id,
-                {
-                    "review_requested_at": now_utc(),
-                    "review_requests": requests,
-                    "completed_at": now_utc(),
-                },
+        max_repairs = getattr(args, "review_repair_attempts", 0)
+        for attempt in range(max_repairs + 1):
+            task_state = current_task_state(state, state_lock, task_id)
+            if args.allow_review_request and not task_state.get("review_requests"):
+                requests = request_review_comments(args, Path(task_state["worktree"]), pr, review_agents(args.review_agents))
+                task_state = checkpoint_task_state(
+                    run_dir,
+                    state,
+                    state_lock,
+                    task_id,
+                    {
+                        "review_requested_at": now_utc(),
+                        "review_requests": requests,
+                        "completed_at": now_utc(),
+                    },
+                )
+            merge = run_merge_gate(
+                args,
+                Path(task_state["worktree"]),
+                task_dir,
+                pr,
+                task_state.get("commit_sha"),
+                task_state.get("review_requested_at") if args.allow_review_request else None,
+                attempt=attempt,
             )
-        merge = run_merge_gate(
-            args,
-            Path(task_state["worktree"]),
-            task_dir,
-            pr,
-            task_state.get("commit_sha"),
-            task_state.get("review_requested_at") if args.allow_review_request else None,
-        )
-        checkpoint_task_state(run_dir, state, state_lock, task_id, {"merge": merge})
-        if merge["returncode"]:
-            raise RuntimeError(f"merge gate exited {merge['returncode']}")
-        merged = checkpoint_task_state(
-            run_dir,
-            state,
-            state_lock,
-            task_id,
-            {
-                "status": "merged",
-                "merged_at": now_utc(),
-                "completed_at": now_utc(),
-            },
-        )
-        print(f"merged {task_id} existing PR {pr.get('number') or pr.get('url')}")
-        return merged
+            checkpoint_task_state(run_dir, state, state_lock, task_id, {"merge": merge})
+            if merge["returncode"] == 0:
+                merged = checkpoint_task_state(
+                    run_dir,
+                    state,
+                    state_lock,
+                    task_id,
+                    {
+                        "status": "merged",
+                        "merged_at": now_utc(),
+                        "completed_at": now_utc(),
+                    },
+                )
+                print(f"merged {task_id} existing PR {pr.get('number') or pr.get('url')}")
+                return merged
+
+            stdout = Path(merge["stdout_log"]).read_text(encoding="utf-8")
+            stderr = Path(merge["stderr_log"]).read_text(encoding="utf-8")
+            output = stderr or stdout
+            if not is_review_thread_gate_failure(output) or attempt >= max_repairs:
+                raise RuntimeError(f"merge gate failed for {task_id}: {output}")
+            if not args.allow_review_request:
+                raise RuntimeError(f"merge gate failed for {task_id}: review repair requires --allow-review-request: {output}")
+            print(f"{task_id}: merge gate found unresolved review threads; running review repair attempt {attempt + 1}/{max_repairs}")
+            repair_review_threads(task, args, run_dir, state, state_lock, attempt + 1)
+        raise RuntimeError(f"merge gate failed for {task_id}: review repair attempts exhausted")
     except Exception as exc:  # noqa: BLE001 - task state records exact failure.
         checkpoint_task_state(
             run_dir,
@@ -940,9 +1218,12 @@ def parse_args():
     parser.add_argument("--ci-poll-seconds", type=int, default=15)
     parser.add_argument("--review-timeout-seconds", type=int, default=600)
     parser.add_argument("--review-thread-timeout-seconds", type=int, default=0)
+    parser.add_argument("--review-repair-attempts", type=int, default=2)
+    parser.add_argument("--no-resolve-review-threads", dest="resolve_review_threads", action="store_false")
     parser.add_argument("--cleanup-artifacts", action="store_true", help="List or remove old run directories and task worktrees.")
     parser.add_argument("--cleanup-older-than-days", type=int, default=30)
     parser.add_argument("--confirm-cleanup", action="store_true", help="Required to remove artifacts when --cleanup-artifacts is used without --dry-run.")
+    parser.set_defaults(resolve_review_threads=True)
     return parser.parse_args()
 
 
@@ -977,6 +1258,9 @@ def main():
         return 2
     if args.review_thread_timeout_seconds < 0:
         print("--review-thread-timeout-seconds must be zero or greater", file=sys.stderr)
+        return 2
+    if args.review_repair_attempts < 0:
+        print("--review-repair-attempts must be zero or greater", file=sys.stderr)
         return 2
     plan_path = Path(args.implementation_plan).resolve()
     try:

@@ -85,7 +85,8 @@ python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py 
   --allow-review-request \
   --review-agents codex,copilot \
   --allow-merge \
-  --merge-method squash
+  --merge-method squash \
+  --review-repair-attempts 2
 
 python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py \
   docs/agentic-system/implementation/implementation-plan.json \

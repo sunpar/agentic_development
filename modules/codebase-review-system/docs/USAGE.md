@@ -94,8 +94,8 @@ The generator writes:
 
 Use `--feature FEATURE-ID` to generate tasks for one feature, and `--dry-run` to print JSON without writing files.
 
-`orchestrate_implementation_waves.py` prepares task worktrees, emits per-task prompts, and writes external run state under `~/.codex/runs/implementation-waves/`. Pass `--allow-codex` to run `codex exec` against each task prompt after worktree preparation, add `--allow-pr` to commit changed files, push the task branch, and create a PR, add `--allow-review-request` to comment review requests for `--review-agents`, and add `--allow-merge` to run the shared merge gate for the task PR. `--no-merge` and `--pr-only` disable merge execution even when merge authority is otherwise present. It checkpoints run state and summaries at run start and after each task, so partial preparation failures preserve completed task state and the failing task error.
-Run summaries include the implementation plan path and hash, selected task ids, execution options, per-task wave numbers, branches, worktrees, prompt paths, Codex status, verification results, changed files, commit SHAs, PR URLs/numbers, review request records, merge-gate logs, merge timestamps, statuses, and errors.
+`orchestrate_implementation_waves.py` prepares task worktrees, emits per-task prompts, and writes external run state under `~/.codex/runs/implementation-waves/`. Pass `--allow-codex` to run `codex exec` against each task prompt after worktree preparation, add `--allow-pr` to commit changed files, push the task branch, and create a PR, add `--allow-review-request` to comment review requests for `--review-agents`, and add `--allow-merge` to run the shared merge gate for the task PR. If the merge gate reports unresolved review threads, `--review-repair-attempts` bounds automatic Codex repair attempts; use `--no-resolve-review-threads` to leave GitHub thread resolution manual. `--no-merge` and `--pr-only` disable merge execution even when merge authority is otherwise present. It checkpoints run state and summaries at run start and after each task, so partial preparation failures preserve completed task state and the failing task error.
+Run summaries include the implementation plan path and hash, selected task ids, execution options, per-task wave numbers, branches, worktrees, prompt paths, Codex status, verification results, changed files, commit SHAs, PR URLs/numbers, review request records, review repair records, merge-gate logs, merge timestamps, statuses, and errors.
 
 Resume a partially prepared implementation wave:
 
@@ -109,7 +109,7 @@ python3 ~/.codex/agentic-dev-system/scripts/orchestrate_implementation_waves.py 
   --reuse-worktrees
 ```
 
-Resume mode verifies the saved repo, plan path/hash, selected waves, and dry-run mode before skipping already prepared tasks and retrying failed or missing tasks. If a task is already `pr_ready` and the resumed command adds `--allow-merge`, the executor runs the merge gate against the saved PR instead of re-running Codex. Reported resume commands preserve saved Codex, PR, review-request, and merge flags from the original run.
+Resume mode verifies the saved repo, plan path/hash, selected waves, and dry-run mode before skipping already prepared tasks and retrying failed or missing tasks. If a task is already `pr_ready` and the resumed command adds `--allow-merge`, the executor runs the merge gate against the saved PR instead of re-running Codex. Reported resume commands preserve saved Codex, PR, review-request, review-repair, and merge flags from the original run.
 Use repeatable `--task TASK-ID` with `--wave` to prepare only selected tasks from a wave, preserving plan validation and wave order.
 
 Aggregate historical implementation-wave runs:
