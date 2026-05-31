@@ -484,6 +484,39 @@ def request_review_comments(args, worktree, pr, agents):
     return records
 
 
+def successful_review_request_times(records):
+    return [
+        record.get("requested_at")
+        for record in records or []
+        if isinstance(record, dict) and record.get("status") == "completed" and record.get("requested_at")
+    ]
+
+
+def review_requested_at_from_records(records):
+    times = successful_review_request_times(records)
+    return max(times) if times else None
+
+
+def has_successful_review_requests(task_state):
+    return bool(review_requested_at_from_records(task_state.get("review_requests")))
+
+
+def task_context_updates(updates, *task_states):
+    preserved_keys = ("commit_sha", "changed_files", "verification", "pr_url", "pr_number")
+    merged = dict(updates)
+    for key in preserved_keys:
+        if key in merged:
+            continue
+        for task_state in task_states:
+            if not isinstance(task_state, dict) or key not in task_state:
+                continue
+            value = task_state.get(key)
+            if value is not None:
+                merged[key] = value
+                break
+    return merged
+
+
 def run_merge_gate(args, worktree, task_dir, pr, expected_head_sha, require_review_after=None, attempt=0):
     pr_target = pr.get("number") or pr.get("url")
     if not pr_target:
@@ -1018,6 +1051,19 @@ def run_task(task, args, repo, worktree_dir, base_ref, run_dir, plan_path, state
             },
         )
         if args.resume and args.allow_pr and previous.get("commit_sha") and not previous.get("pr_number"):
+            checkpoint_task_state(
+                run_dir,
+                state,
+                state_lock,
+                task_id,
+                {
+                    "status": "committed",
+                    "commit_sha": previous.get("commit_sha"),
+                    "changed_files": previous.get("changed_files", []),
+                    "verification": previous.get("verification", []),
+                    "completed_at": now_utc(),
+                },
+            )
             push_branch(worktree_path, branch)
             pr = create_task_pr(args, worktree_path, task, branch, pr_base_branch, previous.get("verification") or [])
             updates = {
@@ -1040,15 +1086,16 @@ def run_task(task, args, repo, worktree_dir, base_ref, run_dir, plan_path, state
                         task_id,
                         {
                             **updates,
-                            "review_requested_at": now_utc(),
                             "review_requests": exc.records,
                         },
                     )
                     raise
+                requested_at = review_requested_at_from_records(requests)
                 updates.update({
-                    "review_requested_at": now_utc(),
                     "review_requests": requests,
                 })
+                if requested_at:
+                    updates["review_requested_at"] = requested_at
             checkpoint_task_state(run_dir, state, state_lock, task_id, updates)
             return current_task_state(state, state_lock, task_id)
         if args.allow_codex and not args.dry_run:
@@ -1132,22 +1179,24 @@ def run_task(task, args, repo, worktree_dir, base_ref, run_dir, plan_path, state
                                 state_lock,
                                 task_id,
                                 {
-                                    "review_requested_at": now_utc(),
                                     "review_requests": exc.records,
                                     "completed_at": now_utc(),
                                 },
                             )
                             raise
+                        requested_at = review_requested_at_from_records(requests)
+                        updates = {
+                            "review_requests": requests,
+                            "completed_at": now_utc(),
+                        }
+                        if requested_at:
+                            updates["review_requested_at"] = requested_at
                         checkpoint_task_state(
                             run_dir,
                             state,
                             state_lock,
                             task_id,
-                            {
-                                "review_requested_at": now_utc(),
-                                "review_requests": requests,
-                                "completed_at": now_utc(),
-                            },
+                            updates,
                         )
         prefix = "DRY-RUN: would prepare" if args.dry_run else "prepared"
         print(f"{prefix} {task_id} branch {branch} worktree {worktree_path}")
@@ -1156,17 +1205,22 @@ def run_task(task, args, repo, worktree_dir, base_ref, run_dir, plan_path, state
             print(f"DRY-RUN: would run codex for {task_id}")
         return current_task_state(state, state_lock, task_id)
     except Exception as exc:  # noqa: BLE001 - task state records exact failure.
+        latest = current_task_state(state, state_lock, task_id)
         checkpoint_task_state(
             run_dir,
             state,
             state_lock,
             task_id,
-            {
-                "status": "failed",
-                "prompt_path": prompt_path,
-                "error": str(exc),
-                "completed_at": now_utc(),
-            },
+            task_context_updates(
+                {
+                    "status": "failed",
+                    "prompt_path": prompt_path,
+                    "error": str(exc),
+                    "completed_at": now_utc(),
+                },
+                latest,
+                previous,
+            ),
         )
         return current_task_state(state, state_lock, task_id)
 
@@ -1278,10 +1332,10 @@ def repair_review_threads(task, args, run_dir, state, state_lock, attempt):
         "completed_at": now_utc(),
     }
     if review_requests:
-        updates.update({
-            "review_requested_at": now_utc(),
-            "review_requests": review_requests,
-        })
+        requested_at = review_requested_at_from_records(review_requests)
+        updates["review_requests"] = review_requests
+        if requested_at:
+            updates["review_requested_at"] = requested_at
     checkpoint_task_state(run_dir, state, state_lock, task_id, updates)
     return True
 
@@ -1304,7 +1358,7 @@ def merge_ready_task(task, args, run_dir, state, state_lock):
         max_repairs = getattr(args, "review_repair_attempts", 0)
         for attempt in range(max_repairs + 1):
             task_state = current_task_state(state, state_lock, task_id)
-            if args.allow_review_request and not task_state.get("review_requests"):
+            if args.allow_review_request and not has_successful_review_requests(task_state):
                 try:
                     requests = request_review_comments(args, Path(task_state["worktree"]), pr, review_agents(args.review_agents))
                 except ReviewRequestError as exc:
@@ -1314,27 +1368,28 @@ def merge_ready_task(task, args, run_dir, state, state_lock):
                         state_lock,
                         task_id,
                         {
-                            "review_requested_at": now_utc(),
                             "review_requests": exc.records,
                             "completed_at": now_utc(),
                         },
                     )
                     raise
+                requested_at = review_requested_at_from_records(requests)
+                updates = {
+                    "review_requests": requests,
+                    "completed_at": now_utc(),
+                }
+                if requested_at:
+                    updates["review_requested_at"] = requested_at
                 task_state = checkpoint_task_state(
                     run_dir,
                     state,
                     state_lock,
                     task_id,
-                    {
-                        "review_requested_at": now_utc(),
-                        "review_requests": requests,
-                        "completed_at": now_utc(),
-                    },
+                    updates,
                 )
-            review_required_at = task_state.get("review_requested_at")
-            if not review_required_at and isinstance(task_state.get("review_requests"), list):
-                requested_times = [item.get("requested_at") for item in task_state["review_requests"] if isinstance(item, dict) and item.get("requested_at")]
-                review_required_at = max(requested_times) if requested_times else None
+            review_required_at = review_requested_at_from_records(task_state.get("review_requests"))
+            if not review_required_at and not task_state.get("review_requests"):
+                review_required_at = task_state.get("review_requested_at")
             merge = run_merge_gate(
                 args,
                 Path(task_state["worktree"]),

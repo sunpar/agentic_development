@@ -177,6 +177,42 @@ class ImplementationWaveRunReportTests(unittest.TestCase):
         self.assertTrue(resume.startswith("cd /tmp/repo && "))
         self.assertIn("--task TASK-001 --task TASK-002", resume)
 
+    def test_resume_command_limits_selected_tasks_to_failed_task_wave(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "runs"
+            run_dir = root / "repo-20260529T170000Z"
+            run_dir.mkdir(parents=True)
+            (run_dir / "run-state.json").write_text(json.dumps({
+                "repo": "/tmp/repo",
+                "run_dir": str(run_dir),
+                "implementation_plan": "/tmp/repo/docs/implementation-plan.json",
+                "dry_run": False,
+                "selected_waves": [1, 2],
+                "selected_task_ids": ["TASK-001", "TASK-002"],
+                "tasks": {
+                    "TASK-001": {"status": "failed", "wave": 1, "worktree": "/tmp/worktrees/task-001"},
+                    "TASK-002": {"status": "planned", "wave": 2, "worktree": "/tmp/worktrees/task-002"},
+                },
+            }), encoding="utf-8")
+            output_json = Path(td) / "aggregate.json"
+
+            result = run([
+                PY,
+                str(SCRIPT),
+                "--runs-root",
+                str(root),
+                "--output-json",
+                str(output_json),
+            ])
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            aggregate = json.loads(output_json.read_text())
+
+        resume = aggregate["runs"][0]["resume_commands"][0]
+        self.assertIn("--wave 1", resume)
+        self.assertIn("--task TASK-001", resume)
+        self.assertNotIn("--task TASK-002", resume)
+
     def test_aggregates_summary_and_state_backed_runs(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "runs"

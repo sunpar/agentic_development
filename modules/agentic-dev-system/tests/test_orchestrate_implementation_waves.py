@@ -622,6 +622,133 @@ if sys.argv[1:3] == ['pr', 'create']:
             self.assertEqual(task_state["status"], "pr_ready")
             self.assertEqual(task_state["pr_number"], 123)
 
+    def test_resume_preserves_committed_state_when_pr_retry_fails_again(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            add_bare_origin(td, repo)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            bin_dir = Path(td) / "bin"
+            fail_bin_dir = Path(td) / "fail-bin"
+            bin_dir.mkdir()
+            fail_bin_dir.mkdir()
+            codex = fake_codex_bin(bin_dir, """
+import pathlib
+pathlib.Path('src').mkdir(exist_ok=True)
+pathlib.Path('src/task-001.py').write_text('implemented\\n', encoding='utf-8')
+""")
+            failing_codex = fake_codex_bin(fail_bin_dir, "import sys\nsys.exit(99)")
+            gh = fake_gh_bin(bin_dir, """
+import sys
+if sys.argv[1:3] == ['pr', 'create']:
+    print('still failing', file=sys.stderr)
+    raise SystemExit(2)
+""")
+            item = task("TASK-001", 1, "feature/task-001-core-flow")
+            item["verification_commands"] = ["python3 -c \"from pathlib import Path; assert Path('src/task-001.py').exists()\""]
+            write_plan(plan, [item])
+
+            first = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--allow-pr",
+                "--codex-bin",
+                str(codex),
+                "--gh-bin",
+                str(gh),
+            ], cwd=repo)
+            state_after_first = json.loads((run_dir / "run-state.json").read_text())
+            saved_commit = state_after_first["tasks"]["TASK-001"]["commit_sha"]
+            resumed = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--allow-pr",
+                "--codex-bin",
+                str(failing_codex),
+                "--gh-bin",
+                str(gh),
+                "--resume",
+                "--reuse-worktrees",
+            ], cwd=repo)
+
+            self.assertNotEqual(first.returncode, 0)
+            self.assertNotEqual(resumed.returncode, 0)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            task_state = state["tasks"]["TASK-001"]
+            self.assertEqual(task_state["status"], "failed")
+            self.assertEqual(task_state["commit_sha"], saved_commit)
+            self.assertEqual(task_state["changed_files"], ["src/task-001.py"])
+
+    def test_failed_review_requests_are_not_marked_requested(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(td)
+            add_bare_origin(td, repo)
+            plan = repo / "implementation-plan.json"
+            run_dir = Path(td) / "run"
+            worktrees = Path(td) / "worktrees"
+            bin_dir = Path(td) / "bin"
+            bin_dir.mkdir()
+            codex = fake_codex_bin(bin_dir, """
+import pathlib
+pathlib.Path('src').mkdir(exist_ok=True)
+pathlib.Path('src/task-001.py').write_text('implemented\\n', encoding='utf-8')
+""")
+            gh = fake_gh_bin(bin_dir, """
+import sys
+if sys.argv[1:3] == ['pr', 'create']:
+    print('https://github.com/example/repo/pull/123')
+elif sys.argv[1:3] in (['pr', 'comment'], ['pr', 'edit']):
+    print('review request failed', file=sys.stderr)
+    raise SystemExit(2)
+""")
+            item = task("TASK-001", 1, "feature/task-001-core-flow")
+            item["verification_commands"] = ["python3 -c \"from pathlib import Path; assert Path('src/task-001.py').exists()\""]
+            write_plan(plan, [item])
+
+            result = run([
+                sys.executable,
+                str(SCRIPT),
+                str(plan),
+                "--run-dir",
+                str(run_dir),
+                "--worktree-dir",
+                str(worktrees),
+                "--base-ref",
+                "HEAD",
+                "--allow-codex",
+                "--allow-pr",
+                "--allow-review-request",
+                "--review-agents",
+                "codex",
+                "--codex-bin",
+                str(codex),
+                "--gh-bin",
+                str(gh),
+            ], cwd=repo)
+
+            self.assertNotEqual(result.returncode, 0)
+            state = json.loads((run_dir / "run-state.json").read_text())
+            task_state = state["tasks"]["TASK-001"]
+            self.assertEqual(task_state["review_requests"][0]["status"], "failed")
+            self.assertNotIn("review_requested_at", task_state)
+
     def test_allow_pr_requires_allow_codex(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(td)

@@ -275,10 +275,18 @@ def resume_commands(summary, failed_tasks, tasks):
     options = summary.get("execution_options") or {}
     worktree_dir = options.get("worktree_dir") or common_worktree_dir(tasks)
     selected_task_ids = list(summary.get("selected_task_ids") or [])
-    task_args = selected_task_ids or failed_tasks
     commands = []
     for task_id in failed_tasks:
         task = by_id.get(task_id, {})
+        task_wave = task.get("wave")
+        task_args = selected_task_ids or failed_tasks
+        if task_wave is not None and selected_task_ids:
+            same_wave = [
+                selected_task_id
+                for selected_task_id in selected_task_ids
+                if by_id.get(selected_task_id, {}).get("wave") == task_wave
+            ]
+            task_args = same_wave or [task_id]
         cmd = [
             "python3",
             ORCHESTRATOR,
